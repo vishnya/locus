@@ -1,74 +1,87 @@
 """lc focus, lc done, lc progress -- core workflow commands."""
 
-from locus.priorities import load, save, Focus, PriorityItem, now_str, time_str
+from locus.priorities import load, save, now_str, time_str
 from locus.session_status import SessionStatus
 
 _status = SessionStatus()
 
 
-def set_focus(text: str, level: str = ""):
+def set_focus(name: str):
     p = load()
+    proj = p.get_project(name)
+    if not proj:
+        # Fuzzy match
+        for pr in p.projects:
+            if name.lower() in pr.name.lower():
+                proj = pr
+                break
+    if not proj:
+        print(f"No project matching \"{name}\". Projects: {', '.join(pr.name for pr in p.projects)}")
+        return
 
-    # Move current focus back to top of Now list
-    if p.focus:
-        old = p.focus.item
-        old.sub_items = p.focus.log.copy()
-        p.now.insert(0, old)
-
-    p.focus = Focus(
-        item=PriorityItem(text=text, level=level),
-        since=now_str(),
-        log=[],
-    )
+    p.focus = proj.name
+    p.focus_since = now_str()
     save(p)
-    _status.write({"phase": "focus", "status": "running", "detail": f"{level + ' ' if level else ''}{text}"})
-    print(f"Focus set: {level + ' ' if level else ''}{text}")
+    _status.write({"phase": "focus", "status": "running", "detail": proj.name})
+    print(f"Focus set: {proj.name}")
 
 
 def mark_done(n: int | None = None):
     p = load()
 
     if n is not None:
-        # Mark item N from Now list as done
-        if n < 1 or n > len(p.now):
-            print(f"No item #{n}. You have {len(p.now)} items in Now.")
+        # Mark task N in focused project
+        proj = p.focused_project()
+        if not proj:
+            print("No focused project. Use `lc focus` first.")
             return
-        item = p.now.pop(n - 1)
-        item.sub_items.insert(0, f"~{now_str()}~")
-        p.done.insert(0, item)
+        tasks = proj.tasks()
+        pending = [(i, t) for i, t in enumerate(tasks) if not t.done]
+        if n < 1 or n > len(pending):
+            print(f"No task #{n}. You have {len(pending)} pending tasks.")
+            return
+        idx, task = pending[n - 1]
+        # Find and update the line in items
+        task_count = 0
+        for j, line in enumerate(proj.items):
+            if line.strip().startswith("- [ ]") or line.strip().startswith("- [x]"):
+                task_count += 1
+                if task_count - 1 == idx:
+                    proj.items[j] = line.replace("- [ ]", "- [x]", 1)
+                    break
+        p.done.insert(0, f"[x] {task.text}")
         save(p)
-        _status.write({"phase": "done", "status": "done", "summary": item.text})
-        print(f"Done: {item.text}")
+        _status.write({"phase": "done", "status": "done", "summary": task.text})
+        print(f"Done: {task.text}")
         return
 
-    # Mark current focus as done
-    if not p.focus:
-        print("No current focus. Nothing to mark done.")
+    # No number -- mark top pending task in focused project
+    proj = p.focused_project()
+    if not proj:
+        print("No focused project. Use `lc focus` first.")
         return
-
-    item = p.focus.item
-    item.sub_items = [f"~{now_str()}~"] + p.focus.log
-    p.done.insert(0, item)
-    p.focus = None
-
-    # Auto-advance: if there are Now items, prompt
-    if p.now:
-        print(f"Done: {item.text}")
-        print(f"Next up: {p.now[0].text}")
-        print("Use `lc focus` to start it, or it stays in your Now list.")
-    else:
-        print(f"Done: {item.text}")
-        print("Nothing left in Now. Use `lc priority add` or `lc focus`.")
-
+    tasks = proj.tasks()
+    pending = [t for t in tasks if not t.done]
+    if not pending:
+        print(f"No pending tasks in {proj.name}.")
+        return
+    # Mark the first pending task done
+    for j, line in enumerate(proj.items):
+        if line.strip().startswith("- [ ]"):
+            proj.items[j] = line.replace("- [ ]", "- [x]", 1)
+            break
+    p.done.insert(0, f"[x] {pending[0].text}")
     save(p)
-    _status.write({"phase": "done", "status": "done", "summary": item.text})
+    _status.write({"phase": "done", "status": "done", "summary": pending[0].text})
+    print(f"Done: {pending[0].text}")
 
 
 def log_progress(text: str):
     p = load()
-    if not p.focus:
-        print("No current focus. Use `lc focus` first.")
+    proj = p.focused_project()
+    if not proj:
+        print("No focused project. Use `lc focus` first.")
         return
-    p.focus.log.append(f"[{time_str()}] {text}")
+    proj.items.append(f"- [{time_str()}] {text}")
     save(p)
     print(f"Logged: {text}")

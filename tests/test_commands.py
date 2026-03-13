@@ -6,7 +6,7 @@ import tempfile
 _tmpdir = tempfile.mkdtemp()
 os.environ["LOCUS_VAULT"] = os.path.join(_tmpdir, "PRIORITIES.md")
 
-from locus.priorities import load, save, Priorities, PriorityItem, Focus
+from locus.priorities import load, save, Priorities, Project
 from locus.commands import focus, note, drop, priority
 
 
@@ -15,81 +15,107 @@ def setup():
     save(Priorities())
 
 
-def test_priority_add():
+def test_project_add():
     setup()
-    priority.add("Ship feature", level="!!")
+    priority.add_project("My Project")
     p = load()
-    assert len(p.now) == 1
-    assert p.now[0].text == "Ship feature"
-    assert p.now[0].level == "!!"
+    assert len(p.projects) == 1
+    assert p.projects[0].name == "My Project"
 
 
-def test_priority_ordering():
+def test_project_add_duplicate():
     setup()
-    priority.add("Normal task")
-    priority.add("Urgent task", level="!!")
-    priority.add("High task", level="!")
+    priority.add_project("My Project")
+    priority.add_project("My Project")
     p = load()
-    assert p.now[0].level == "!!"
-    assert p.now[1].level == "!"
-    assert p.now[2].level == ""
+    assert len(p.projects) == 1
+
+
+def test_task_add_to_focused():
+    setup()
+    priority.add_project("My Project")
+    focus.set_focus("My Project")
+    priority.add("ship hotfix", level="!!")
+    p = load()
+    tasks = p.projects[0].tasks()
+    assert len(tasks) == 1
+    assert "ship hotfix" in tasks[0].text
+
+
+def test_task_add_to_named_project():
+    setup()
+    priority.add_project("Alpha")
+    priority.add_project("Beta")
+    priority.add("alpha task", project="Alpha")
+    priority.add("beta task", project="Beta")
+    p = load()
+    assert len(p.projects[0].tasks()) == 1
+    assert len(p.projects[1].tasks()) == 1
 
 
 def test_focus_set():
     setup()
-    focus.set_focus("Build locus", level="!!")
+    priority.add_project("My Project")
+    focus.set_focus("My Project")
     p = load()
-    assert p.focus is not None
-    assert p.focus.item.text == "Build locus"
+    assert p.focus == "My Project"
 
 
-def test_focus_switch_moves_old_to_now():
+def test_focus_fuzzy_match():
     setup()
-    focus.set_focus("Task A")
-    focus.set_focus("Task B")
+    priority.add_project("Cache Latency Investigation")
+    focus.set_focus("cache")
     p = load()
-    assert p.focus.item.text == "Task B"
-    assert len(p.now) == 1
-    assert p.now[0].text == "Task A"
+    assert p.focus == "Cache Latency Investigation"
 
 
-def test_done_moves_focus_to_done():
+def test_done_marks_top_task():
     setup()
-    focus.set_focus("Task A")
+    priority.add_project("Proj")
+    focus.set_focus("Proj")
+    priority.add("task one")
+    priority.add("task two")
     focus.mark_done()
     p = load()
-    assert p.focus is None
+    tasks = p.projects[0].tasks()
+    pending = [t for t in tasks if not t.done]
+    assert len(pending) == 1
+    assert pending[0].text == "task two"
     assert len(p.done) == 1
-    assert p.done[0].text == "Task A"
 
 
 def test_done_by_number():
     setup()
-    priority.add("Task 1")
-    priority.add("Task 2")
-    focus.mark_done(1)
+    priority.add_project("Proj")
+    focus.set_focus("Proj")
+    priority.add("task one")
+    priority.add("task two")
+    focus.mark_done(2)
     p = load()
-    assert len(p.now) == 1
-    assert len(p.done) == 1
+    tasks = p.projects[0].tasks()
+    pending = [t for t in tasks if not t.done]
+    assert len(pending) == 1
+    assert pending[0].text == "task one"
 
 
 def test_progress():
     setup()
-    focus.set_focus("Task A")
+    priority.add_project("Proj")
+    focus.set_focus("Proj")
     focus.log_progress("halfway done")
     p = load()
-    assert len(p.focus.log) == 1
-    assert "halfway done" in p.focus.log[0]
+    assert any("halfway done" in item for item in p.projects[0].items)
 
 
 def test_note():
     setup()
-    focus.set_focus("Task A")
+    priority.add_project("Proj")
+    focus.set_focus("Proj")
     note.run("remember to check config")
     p = load()
     assert len(p.notes) == 1
     assert "remember to check config" in p.notes[0]
-    assert "Task A" in p.notes[0]
+    assert "Proj" in p.notes[0]
 
 
 def test_note_without_focus():
@@ -98,12 +124,3 @@ def test_note_without_focus():
     p = load()
     assert len(p.notes) == 1
     assert "standalone note" in p.notes[0]
-
-
-def test_priority_add_to_queue():
-    setup()
-    priority.add("Later task", queue=True)
-    p = load()
-    assert len(p.now) == 0
-    assert len(p.queue) == 1
-    assert p.queue[0].text == "Later task"

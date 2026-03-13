@@ -1,4 +1,4 @@
-"""lc drop -- drop a link, tagged to current focus."""
+"""lc drop -- drop a link, tagged to current focus project."""
 
 import subprocess
 from locus.priorities import load, save, time_str
@@ -13,10 +13,11 @@ def run(url: str | None = None):
             return
 
     p = load()
-    if p.focus:
-        p.focus.log.append(f"[{time_str()}] [link]({url})")
+    proj = p.focused_project()
+    if proj:
+        proj.items.append(f"- [{url}]({url})")
         save(p)
-        print(f"Dropped: {url}")
+        print(f"Dropped in {proj.name}: {url}")
     else:
         p.notes.append(f"[link]({url})")
         save(p)

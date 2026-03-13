@@ -7,29 +7,25 @@ def run():
     p = load()
 
     if p.focus:
-        level = f"{p.focus.item.level} " if p.focus.item.level else ""
-        since = f" (since {p.focus.since})" if p.focus.since else ""
-        print(f"FOCUS: {level}{p.focus.item.text}{since}")
-        for entry in p.focus.log[-3:]:  # last 3 log entries
-            print(f"  > {entry}")
+        since = f" (since {p.focus_since})" if p.focus_since else ""
+        print(f"FOCUS: {p.focus}{since}")
         print()
 
-    if p.now:
-        print("NOW:")
-        for i, item in enumerate(p.now, 1):
-            level = f"{item.level} " if item.level else ""
-            print(f"  {i}. {level}{item.text}")
-        print()
+    if not p.projects:
+        print("No projects. Start with: lc project add \"Project Name\"")
+        return
 
-    if p.queue:
-        print(f"QUEUE: {len(p.queue)} items")
+    for proj in p.projects:
+        tasks = proj.tasks()
+        pending = [t for t in tasks if not t.done]
+        done_count = len(tasks) - len(pending)
+        focus_marker = " [FOCUS]" if p.focus and p.focus.lower() == proj.name.lower() else ""
+        print(f"{proj.name}{focus_marker}  ({len(pending)} pending, {done_count} done)")
+        for t in pending[:3]:  # show top 3 pending tasks
+            print(f"  [ ] {t.text}")
+        if len(pending) > 3:
+            print(f"  ... +{len(pending) - 3} more")
         print()
 
     if p.done:
-        print(f"DONE TODAY: {len(p.done)} items")
-        for item in p.done[-3:]:
-            print(f"  x {item.text}")
-        print()
-
-    if not p.focus and not p.now and not p.queue:
-        print("Nothing here yet. Start with: lc priority add \"your task\"")
+        print(f"DONE: {len(p.done)} items")

@@ -10,24 +10,16 @@ def run():
     print()
 
     if p.focus:
-        level = f"{p.focus.item.level} " if p.focus.item.level else ""
-        print(f"Focus: {level}{p.focus.item.text} (since {p.focus.since})")
-        for entry in p.focus.log:
-            print(f"  > {entry}")
+        print(f"Focus: {p.focus} (since {p.focus_since})")
         print()
 
-    if p.now:
-        print("Now:")
-        for i, item in enumerate(p.now, 1):
-            level = f"{item.level} " if item.level else ""
-            print(f"  {i}. {level}{item.text}")
-        print()
-
-    if p.queue:
-        print("Queue:")
-        for item in p.queue:
-            level = f"{item.level} " if item.level else ""
-            print(f"  - {level}{item.text}")
+    for proj in p.projects:
+        tasks = proj.tasks()
+        pending = [t for t in tasks if not t.done]
+        focus_marker = " [FOCUS]" if p.focus and p.focus.lower() == proj.name.lower() else ""
+        print(f"{proj.name}{focus_marker}:")
+        for t in pending:
+            print(f"  [ ] {t.text}")
         print()
 
     if p.notes:

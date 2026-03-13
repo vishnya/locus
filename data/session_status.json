@@ -1,6 +1,7 @@
 {
-  "phase": "focus",
+  "phase": "redesigning_data_model",
   "status": "running",
-  "detail": "Task A",
-  "updated_at": "2026-03-13T19:49:27+00:00"
+  "detail": "Reworking from project-grouped to global priority stack with Active/Up Next sections. Hammerspoon chord hotkeys (Ctrl+Shift+L) built. 31 tests passing. Next: implement bump/park/active commands and flat global task list.",
+  "started_at": "2026-03-13T19:30:00+00:00",
+  "updated_at": "2026-03-13T21:49:38+00:00"
 }
