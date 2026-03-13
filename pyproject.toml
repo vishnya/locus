@@ -1,0 +1,16 @@
+[project]
+name = "locus"
+version = "0.1.0"
+description = "Local-first second brain and priority tracker"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+lc = "locus.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["locus*"]
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
