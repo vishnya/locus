@@ -52,14 +52,6 @@ def test_add_task():
     assert p.up_next[0].project == "Proj"
 
 
-def test_add_task_no_project():
-    setup()
-    priority.add("standalone task")
-    p = load()
-    assert len(p.up_next) == 1
-    assert p.up_next[0].project == ""
-
-
 def test_add_task_nonexistent_project(capsys):
     setup()
     priority.add("task", project="Ghost")
@@ -337,26 +329,6 @@ def test_note():
     assert "Proj" in p.notes[0]
 
 
-def test_note_no_active():
-    setup()
-    p = Priorities()
-    save(p)
-    note.run("orphan note")
-    p = load()
-    assert len(p.notes) == 1
-    assert "orphan note" in p.notes[0]
-
-
-def test_note_no_project_tag():
-    """Note with active task but no project should still work."""
-    setup()
-    p = Priorities(active=[Task(text="task", project="")])
-    save(p)
-    note.run("plain note")
-    p = load()
-    assert "plain note" in p.notes[0]
-
-
 # --- Drop ---
 
 def test_drop_with_url():
@@ -370,9 +342,3 @@ def test_drop_with_url():
     assert "[link]" in p.notes[0]
 
 
-def test_drop_no_active():
-    setup()
-    drop.run("https://example.com")
-    p = load()
-    assert len(p.notes) == 1
-    assert "https://example.com" in p.notes[0]

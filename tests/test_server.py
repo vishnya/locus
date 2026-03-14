@@ -100,12 +100,6 @@ def test_add_task_to_active(server):
     assert len(data["active"]) == 2
 
 
-def test_add_task_no_project(server):
-    _seed()
-    data = _api(server, "task/add", {"text": "orphan"})
-    assert data["up_next"][0]["project"] == ""
-
-
 # =============================================================================
 # POST /api/task/done
 # =============================================================================

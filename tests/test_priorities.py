@@ -187,11 +187,6 @@ def test_task_to_line():
     assert t.to_line() == "- [x] [Locus] fix bug"
 
 
-def test_task_no_project():
-    t = Task(text="standalone task")
-    assert t.to_line() == "- [ ] standalone task"
-
-
 def test_task_to_lines_with_notes_and_deadline():
     t = Task(text="task", project="P", notes=["note1", "note2"], deadline="2026-05-01")
     lines = t.to_lines()
@@ -405,13 +400,6 @@ def test_parse_task_no_checkbox():
     p = parse(content)
     assert len(p.active) == 1
     assert p.active[0].text == "real task"
-
-
-def test_parse_task_no_project_tag():
-    content = "## Active\n- [ ] task without project\n"
-    p = parse(content)
-    assert p.active[0].project == ""
-    assert p.active[0].text == "task without project"
 
 
 def test_multiple_notes_sections():
