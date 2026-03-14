@@ -1,7 +1,7 @@
-"""lc drop -- drop a link, tagged to current focus project."""
+"""lc drop -- drop a link, tagged to first active task's project if any."""
 
 import subprocess
-from locus.priorities import load, save, time_str
+from locus.priorities import load, save, now_str
 
 
 def run(url: str | None = None):
@@ -13,12 +13,9 @@ def run(url: str | None = None):
             return
 
     p = load()
-    proj = p.focused_project()
-    if proj:
-        proj.items.append(f"- [{url}]({url})")
-        save(p)
-        print(f"Dropped in {proj.name}: {url}")
-    else:
-        p.notes.append(f"[link]({url})")
-        save(p)
-        print(f"Dropped (no focus): {url}")
+    tag = ""
+    if p.active and p.active[0].project:
+        tag = f" [{p.active[0].project}]"
+    p.notes.append(f"[{now_str()}]{tag} [link]({url})")
+    save(p)
+    print(f"Dropped: {url}")

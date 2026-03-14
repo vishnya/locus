@@ -1,43 +1,50 @@
-"""lc priority add / lc project add -- manage projects and tasks."""
+"""lc add, lc project add -- manage tasks and projects."""
 
-from locus.priorities import load, save, Project
+from locus.priorities import load, save, Task, ProjectInfo
 
 
-def add(text: str, level: str = "", queue: bool = False, project: str | None = None):
-    """Add a task to a project."""
+def add(text: str, level: str = "", project: str | None = None):
+    """Add a task to Up Next."""
     p = load()
 
-    # Find target project
-    proj = None
+    proj_name = ""
     if project:
-        proj = p.get_project(project)
-        if not proj:
-            for pr in p.projects:
-                if project.lower() in pr.name.lower():
-                    proj = pr
-                    break
-    elif p.focus:
-        proj = p.focused_project()
-
-    if not proj:
-        if p.projects:
-            print(f"Specify a project with --project, or use `lc focus`. Projects: {', '.join(pr.name for pr in p.projects)}")
+        proj = p.find_project(project)
+        if proj:
+            proj_name = proj.name
         else:
-            print("No projects yet. Create one with: lc project add \"Project Name\"")
-        return
+            print(f"No project matching \"{project}\". Projects: {', '.join(p.project_names())}")
+            return
 
     prefix = f"{level} " if level else ""
-    proj.items.append(f"- [ ] {prefix}{text}")
+    task = Task(text=f"{prefix}{text}", project=proj_name)
+
+    # Insert by priority level
+    if level == "!!":
+        p.up_next.insert(0, task)
+    elif level == "!":
+        # After !! items
+        insert_at = 0
+        for i, t in enumerate(p.up_next):
+            if not t.text.startswith("!! "):
+                insert_at = i
+                break
+            insert_at = i + 1
+        p.up_next.insert(insert_at, task)
+    else:
+        p.up_next.append(task)
+
     save(p)
-    print(f"Added to {proj.name}: {prefix}{text}")
+    tag = f"[{proj_name}] " if proj_name else ""
+    print(f"Added: {tag}{prefix}{text}")
 
 
-def add_project(name: str):
+def add_project(name: str, desc: str = ""):
     """Add a new project."""
     p = load()
     if p.get_project(name):
         print(f"Project \"{name}\" already exists.")
         return
-    p.projects.append(Project(name=name))
+    p.projects.append(ProjectInfo(name=name, description=desc))
     save(p)
     print(f"Created project: {name}")

@@ -1,7 +1,14 @@
 """Parse and write PRIORITIES.md -- the single source of truth for Locus.
 
-Format is project-based: each ## heading is a project containing
-checkbox tasks and links. Hand-editable in Obsidian like a Google Doc.
+Format: global priority stack with project-tagged tasks.
+- ## Active: tasks currently being worked on (2-3 at a time)
+- ## Up Next: ordered backlog, top is highest priority
+- ## Projects: descriptions and links per project
+- ## Done: completed tasks
+- ## Notes: timestamped notes
+
+Tasks carry [ProjectName] tags. Order in file = priority order.
+Hand-editable in Obsidian (Alt+Up/Down to reorder lines).
 """
 
 import fcntl
@@ -21,109 +28,190 @@ def vault_path() -> Path:
 @dataclass
 class Task:
     text: str
+    project: str = ""
     done: bool = False
+    notes: list[str] = field(default_factory=list)
+    deadline: str = ""  # ISO date string, e.g. "2026-03-20"
+
+    def to_lines(self) -> list[str]:
+        check = "x" if self.done else " "
+        tag = f"[{self.project}] " if self.project else ""
+        dl = f" @due({self.deadline})" if self.deadline else ""
+        lines = [f"- [{check}] {tag}{self.text}{dl}"]
+        for note in self.notes:
+            lines.append(f"  - note: {note}")
+        return lines
 
     def to_line(self) -> str:
-        check = "x" if self.done else " "
-        return f"- [{check}] {self.text}"
+        return self.to_lines()[0]
 
 
 @dataclass
-class Project:
+class ProjectInfo:
     name: str
-    items: list[str] = field(default_factory=list)  # raw lines (tasks, links, notes)
-
-    def tasks(self) -> list[Task]:
-        """Extract tasks from items."""
-        result = []
-        for line in self.items:
-            m = re.match(r"^- \[([ x])\] (.+)$", line)
-            if m:
-                result.append(Task(text=m.group(2), done=m.group(1) == "x"))
-        return result
+    description: str = ""
+    tasks: list = field(default_factory=list)  # list[Task]
 
     def to_lines(self) -> list[str]:
-        lines = [f"## {self.name}"]
-        for item in self.items:
-            lines.append(item)
+        lines = [f"### {self.name}"]
+        if self.description:
+            lines.append(self.description)
+        for task in self.tasks:
+            lines.extend(task.to_lines())
         return lines
 
 
 @dataclass
 class Priorities:
-    focus: str = ""  # project name
-    focus_since: str = ""
-    projects: list[Project] = field(default_factory=list)
-    done: list[str] = field(default_factory=list)  # completed items (cross-project)
+    active: list[Task] = field(default_factory=list)
+    up_next: list[Task] = field(default_factory=list)
+    projects: list[ProjectInfo] = field(default_factory=list)
+    done: list[Task] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
 
-    def get_project(self, name: str) -> Project | None:
+    def get_project(self, name: str) -> ProjectInfo | None:
         for p in self.projects:
             if p.name.lower() == name.lower():
                 return p
         return None
 
-    def focused_project(self) -> Project | None:
-        if not self.focus:
-            return None
-        return self.get_project(self.focus)
+    def find_project(self, name: str) -> ProjectInfo | None:
+        """Fuzzy match project by substring."""
+        proj = self.get_project(name)
+        if proj:
+            return proj
+        for p in self.projects:
+            if name.lower() in p.name.lower():
+                return p
+        return None
+
+    def all_tasks(self) -> list[Task]:
+        return self.active + self.up_next
+
+    def project_names(self) -> list[str]:
+        return [p.name for p in self.projects]
+
+
+def _parse_task(line: str) -> Task | None:
+    """Parse '- [ ] [Project] text @due(date)' or '- [x] [Project] text'."""
+    m = re.match(r"^- \[([ x])\]\s+(?:\[(.+?)\]\s+)?(.+)$", line.strip())
+    if not m:
+        return None
+    text = m.group(3)
+    deadline = ""
+    due_match = re.search(r"\s*@due\((\d{4}-\d{2}-\d{2})\)\s*$", text)
+    if due_match:
+        deadline = due_match.group(1)
+        text = text[:due_match.start()]
+    return Task(
+        text=text,
+        project=m.group(2) or "",
+        done=m.group(1) == "x",
+        deadline=deadline,
+    )
 
 
 def parse(content: str) -> Priorities:
-    """Parse PRIORITIES.md content into a Priorities structure."""
     p = Priorities()
     lines = content.split("\n")
-    i = 0
+    section = None
     current_project = None
-    section = None  # "project", "done", "notes"
+    i = 0
 
     while i < len(lines):
         line = lines[i]
         stripped = line.strip()
 
-        # Parse focus from header
-        if stripped.startswith("_Focus:"):
-            m = re.search(r"_Focus:\s*(.+?)(?:\s*\(since (.+?)\))?\s*_", stripped)
-            if m:
-                p.focus = m.group(1).strip()
-                p.focus_since = m.group(2) or ""
+        if stripped.startswith("# Priorities") or stripped.startswith("_"):
             i += 1
             continue
 
-        # Skip title and updated lines
-        if stripped.startswith("# Priorities") or stripped.startswith("_Last updated:"):
+        # Section headers
+        if stripped == "## Active":
+            section = "active"
+            current_project = None
+            i += 1
+            continue
+        elif stripped == "## Up Next":
+            section = "up_next"
+            current_project = None
+            i += 1
+            continue
+        elif stripped == "## Projects":
+            section = "projects"
+            current_project = None
+            i += 1
+            continue
+        elif stripped == "## Done":
+            section = "done"
+            current_project = None
+            i += 1
+            continue
+        elif stripped == "## Notes":
+            section = "notes"
+            current_project = None
+            i += 1
+            continue
+        elif stripped.startswith("## "):
+            section = None
+            current_project = None
             i += 1
             continue
 
-        # Detect sections
-        if stripped.startswith("## "):
-            heading = stripped[3:].strip()
-            if heading == "Done":
-                section = "done"
-                current_project = None
-            elif heading == "Notes":
-                section = "notes"
-                current_project = None
-            else:
-                section = "project"
-                current_project = Project(name=heading)
-                p.projects.append(current_project)
-            i += 1
-            continue
-
-        # Collect content
         if stripped == "":
             i += 1
             continue
 
-        if section == "project" and current_project is not None:
-            current_project.items.append(line.rstrip())
+        # Parse indented sub-items (link:/note: under a task)
+        if line.startswith("  - link: ") or line.startswith("  - note: "):
+            # Find the last task added in the current section
+            last_task = None
+            if section in ("active", "up_next"):
+                tasks = getattr(p, section)
+                if tasks:
+                    last_task = tasks[-1]
+            elif section == "projects" and current_project and current_project.tasks:
+                last_task = current_project.tasks[-1]
+            elif section == "done":
+                if p.done:
+                    last_task = p.done[-1]
+            if last_task:
+                if line.startswith("  - link: "):
+                    last_task.notes.append(line[10:].strip())
+                elif line.startswith("  - note: "):
+                    last_task.notes.append(line[10:].strip())
+            i += 1
+            continue
 
-        elif section == "done" and stripped.startswith("- "):
-            p.done.append(stripped[2:])
+        # Parse tasks in Active / Up Next
+        if section in ("active", "up_next"):
+            task = _parse_task(stripped)
+            if task:
+                getattr(p, section).append(task)
 
-        elif section == "notes" and stripped.startswith("- "):
-            p.notes.append(stripped[2:])
+        # Parse projects
+        elif section == "projects":
+            if stripped.startswith("### "):
+                current_project = ProjectInfo(name=stripped[4:].strip())
+                p.projects.append(current_project)
+            elif current_project is not None:
+                task = _parse_task(stripped)
+                if task:
+                    task.project = current_project.name
+                    current_project.tasks.append(task)
+                elif not current_project.description:
+                    current_project.description = stripped
+
+        # Parse done
+        elif section == "done":
+            task = _parse_task(stripped)
+            if task:
+                p.done.append(task)
+
+        # Parse notes
+        elif section == "notes":
+            if stripped.startswith("- "):
+                p.notes.append(stripped[2:])
 
         i += 1
 
@@ -131,43 +219,56 @@ def parse(content: str) -> Priorities:
 
 
 def render(p: Priorities) -> str:
-    """Render a Priorities structure back to markdown."""
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     lines = [
         "# Priorities",
         f"_Last updated: {now}_",
+        "",
     ]
 
-    if p.focus:
-        since = f" (since {p.focus_since})" if p.focus_since else ""
-        lines.append(f"_Focus: {p.focus}{since}_")
+    # Active
+    lines.append("## Active")
+    if p.active:
+        for task in p.active:
+            lines.extend(task.to_lines())
+    else:
+        lines.append("_Nothing active. Use `lc active N` to start a task._")
+    lines.append("")
 
+    # Up Next
+    lines.append("## Up Next")
+    if p.up_next:
+        for task in p.up_next:
+            lines.extend(task.to_lines())
+    else:
+        lines.append("_Backlog empty._")
     lines.append("")
 
     # Projects
-    for proj in p.projects:
-        lines.extend(proj.to_lines())
-        lines.append("")
+    if p.projects:
+        lines.append("## Projects")
+        for proj in p.projects:
+            lines.extend(proj.to_lines())
+            lines.append("")
 
     # Done
     if p.done:
         lines.append("## Done")
-        for item in p.done:
-            lines.append(f"- {item}")
+        for task in p.done:
+            lines.extend(task.to_lines())
         lines.append("")
 
     # Notes
     if p.notes:
         lines.append("## Notes")
-        for note in p.notes:
-            lines.append(f"- {note}")
+        for n in p.notes:
+            lines.append(f"- {n}")
         lines.append("")
 
     return "\n".join(lines)
 
 
 def load() -> Priorities:
-    """Load and parse PRIORITIES.md."""
     path = vault_path()
     if not path.exists():
         return Priorities()
@@ -175,7 +276,6 @@ def load() -> Priorities:
 
 
 def save(p: Priorities) -> None:
-    """Write PRIORITIES.md with file locking."""
     path = vault_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     content = render(p)
@@ -183,6 +283,33 @@ def save(p: Priorities) -> None:
         fcntl.flock(f.fileno(), fcntl.LOCK_EX)
         f.write(content)
         fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+    sync_all_projects_to_obsidian(p)
+
+
+def projects_dir() -> Path:
+    """Directory for individual project .md files in the Obsidian vault."""
+    return vault_path().parent / "Projects"
+
+
+def sync_project_to_obsidian(proj: ProjectInfo) -> None:
+    """Write a project's data to its own Obsidian .md file for graph structure."""
+    d = projects_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    lines = [f"# {proj.name}", ""]
+    if proj.description:
+        lines.extend([proj.description, ""])
+    if proj.tasks:
+        lines.append("## Tasks")
+        for task in proj.tasks:
+            lines.append(task.to_line())
+        lines.append("")
+    (d / f"{proj.name}.md").write_text("\n".join(lines))
+
+
+def sync_all_projects_to_obsidian(p: Priorities) -> None:
+    """Sync all projects to individual Obsidian files."""
+    for proj in p.projects:
+        sync_project_to_obsidian(proj)
 
 
 def now_str() -> str:

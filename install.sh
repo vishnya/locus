@@ -6,36 +6,48 @@ VAULT_DIR="$HOME/Obsidian/main"
 LOCAL_BIN="$HOME/.local/bin"
 INIT_LUA="$HOME/code/anki_fox/hammerspoon/init.lua"
 CLAUDE_COMMANDS="$HOME/.claude/commands"
+OBSIDIAN_HOTKEYS="$VAULT_DIR/.obsidian/hotkeys.json"
+PLIST_SRC="$LOCUS_DIR/launchd/com.locus.plist"
+PLIST_DST="$HOME/Library/LaunchAgents/com.locus.plist"
 DOFILE_LINE='dofile(os.getenv("HOME") .. "/code/locus/hammerspoon/locus_hotkey.lua")'
-DOFILE_COMMENT="-- Locus quick capture"
+DOFILE_COMMENT="-- Locus hotkeys"
 
 echo "Installing Locus..."
 
-# 1. Create venv and install
+# 1. Python environment (uv preferred, pip fallback)
 echo "Setting up Python environment..."
-python3 -m venv "$LOCUS_DIR/.venv"
-"$LOCUS_DIR/.venv/bin/pip" install -q -e "$LOCUS_DIR"
+if command -v uv &>/dev/null; then
+    uv venv "$LOCUS_DIR/.venv" -q 2>/dev/null || true
+    uv pip install -q -e "$LOCUS_DIR" -p "$LOCUS_DIR/.venv/bin/python"
+else
+    python3 -m venv "$LOCUS_DIR/.venv"
+    "$LOCUS_DIR/.venv/bin/pip" install -q -e "$LOCUS_DIR"
+fi
 
-# 2. Symlink lc to ~/.local/bin
+# 2. Symlink lc CLI
 mkdir -p "$LOCAL_BIN"
 ln -sf "$LOCUS_DIR/.venv/bin/lc" "$LOCAL_BIN/lc"
 echo "Installed: lc -> $LOCAL_BIN/lc"
 
 # 3. Create PRIORITIES.md if not present
 if [ ! -f "$VAULT_DIR/PRIORITIES.md" ]; then
+    mkdir -p "$VAULT_DIR"
     cp "$LOCUS_DIR/templates/PRIORITIES.md" "$VAULT_DIR/PRIORITIES.md"
     echo "Created: $VAULT_DIR/PRIORITIES.md"
 else
     echo "Skipped: PRIORITIES.md already exists"
 fi
 
-# 4. Add Hammerspoon hotkey
+# 4. Create Projects directory in Obsidian vault
+mkdir -p "$VAULT_DIR/Projects"
+
+# 5. Add Hammerspoon hotkey
 if [ -f "$INIT_LUA" ]; then
     if ! grep -q "locus_hotkey.lua" "$INIT_LUA"; then
         echo "" >> "$INIT_LUA"
         echo "$DOFILE_COMMENT" >> "$INIT_LUA"
         echo "$DOFILE_LINE" >> "$INIT_LUA"
-        echo "Added Hammerspoon hotkey (Ctrl+Shift+N)"
+        echo "Added Hammerspoon hotkey (Ctrl+Shift+L chord)"
     else
         echo "Skipped: Hammerspoon hotkey already configured"
     fi
@@ -43,19 +55,58 @@ else
     echo "Warning: $INIT_LUA not found. Hammerspoon hotkey not installed."
 fi
 
-# 5. Install Claude commands
+# 6. Configure Obsidian hotkeys (Alt+Up/Down)
+if [ -f "$OBSIDIAN_HOTKEYS" ]; then
+    if ! grep -q "swap-line-up" "$OBSIDIAN_HOTKEYS"; then
+        python3 -c "
+import json
+with open('$OBSIDIAN_HOTKEYS') as f:
+    hotkeys = json.load(f)
+hotkeys['editor:swap-line-up'] = [{'modifiers': ['Alt'], 'key': 'ArrowUp'}]
+hotkeys['editor:swap-line-down'] = [{'modifiers': ['Alt'], 'key': 'ArrowDown'}]
+with open('$OBSIDIAN_HOTKEYS', 'w') as f:
+    json.dump(hotkeys, f, indent=2)
+    f.write('\n')
+"
+        echo "Configured Obsidian hotkeys: Alt+Up/Down"
+    else
+        echo "Skipped: Obsidian hotkeys already configured"
+    fi
+else
+    echo "Warning: Obsidian hotkeys.json not found. Skipping."
+fi
+
+# 7. Install Claude commands
 mkdir -p "$CLAUDE_COMMANDS"
 cp "$LOCUS_DIR/claude/morning.md" "$CLAUDE_COMMANDS/morning.md"
 cp "$LOCUS_DIR/claude/think.md" "$CLAUDE_COMMANDS/think.md"
 echo "Installed Claude commands: /morning, /think"
 
-# 6. Reload Hammerspoon if running
+# 8. Install launchd agent (auto-start web UI on login)
+VENV_PYTHON="$LOCUS_DIR/.venv/bin/python"
+sed -e "s|__VENV_PYTHON__|$VENV_PYTHON|g" \
+    -e "s|__LOCUS_DIR__|$LOCUS_DIR|g" \
+    "$PLIST_SRC" > "$PLIST_DST"
+launchctl unload "$PLIST_DST" 2>/dev/null || true
+launchctl load "$PLIST_DST"
+echo "Installed launchd agent: web UI auto-starts on login (port 5790)"
+
+# 9. Add /etc/hosts alias (requires sudo)
+if ! grep -q "^127.0.0.1.*locus$" /etc/hosts 2>/dev/null; then
+    echo ""
+    echo "To access the UI at http://locus:5790 instead of http://localhost:5790, run:"
+    echo "  echo '127.0.0.1 locus' | sudo tee -a /etc/hosts"
+    echo ""
+fi
+
+# 10. Reload Hammerspoon if running
 if pgrep -x Hammerspoon > /dev/null 2>&1; then
     hs -c "hs.reload()" 2>/dev/null && echo "Hammerspoon reloaded" || echo "Note: reload Hammerspoon manually"
 fi
 
 echo ""
-echo "Locus installed. Try:"
-echo "  lc priority add \"my first task\" --level !!"
-echo "  lc focus \"my first task\""
-echo "  lc status"
+echo "Locus installed!"
+echo "  Web UI: http://localhost:5790 (auto-starts on login)"
+echo "  CLI:    lc status"
+echo "  Hotkey: Ctrl+Shift+L -> [L]note [T]hink [U]I"
+echo "  Logs:   tail -f /tmp/locus.log"

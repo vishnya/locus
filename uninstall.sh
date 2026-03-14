@@ -6,25 +6,37 @@ INIT_LUA="$HOME/code/anki_fox/hammerspoon/init.lua"
 CLAUDE_COMMANDS="$HOME/.claude/commands"
 VAULT_DIR="$HOME/Obsidian/main"
 LOCUS_DIR="$HOME/code/locus"
+OBSIDIAN_HOTKEYS="$VAULT_DIR/.obsidian/hotkeys.json"
+PLIST_DST="$HOME/Library/LaunchAgents/com.locus.plist"
 
 echo "Uninstalling Locus..."
 
-# 1. Remove CLI symlink
+# 1. Unload and remove launchd agent
+if [ -f "$PLIST_DST" ]; then
+    launchctl unload "$PLIST_DST" 2>/dev/null || true
+    rm "$PLIST_DST"
+    echo "Removed launchd agent"
+fi
+
+# 2. Kill any running server
+lsof -ti:5790 2>/dev/null | xargs kill -9 2>/dev/null || true
+
+# 3. Remove CLI symlink
 if [ -L "$LOCAL_BIN/lc" ]; then
     rm "$LOCAL_BIN/lc"
     echo "Removed: $LOCAL_BIN/lc"
 fi
 
-# 2. Remove Hammerspoon hotkey lines
+# 4. Remove Hammerspoon hotkey lines
 if [ -f "$INIT_LUA" ] && grep -q "locus_hotkey.lua" "$INIT_LUA"; then
+    sed -i '' '/-- Locus hotkeys/d' "$INIT_LUA"
     sed -i '' '/-- Locus quick capture/d' "$INIT_LUA"
     sed -i '' '/locus_hotkey\.lua/d' "$INIT_LUA"
-    # Remove trailing blank lines
     sed -i '' -e :a -e '/^\n*$/{$d;N;ba' -e '}' "$INIT_LUA"
     echo "Removed Hammerspoon hotkey"
 fi
 
-# 3. Remove Claude commands
+# 5. Remove Claude commands
 for cmd in morning.md think.md; do
     if [ -f "$CLAUDE_COMMANDS/$cmd" ]; then
         rm "$CLAUDE_COMMANDS/$cmd"
@@ -32,7 +44,30 @@ for cmd in morning.md think.md; do
     fi
 done
 
-# 4. Prompt for PRIORITIES.md
+# 6. Remove Obsidian hotkeys added by Locus
+if [ -f "$OBSIDIAN_HOTKEYS" ] && grep -q "swap-line-up" "$OBSIDIAN_HOTKEYS"; then
+    python3 -c "
+import json
+with open('$OBSIDIAN_HOTKEYS') as f:
+    hotkeys = json.load(f)
+hotkeys.pop('editor:swap-line-up', None)
+hotkeys.pop('editor:swap-line-down', None)
+with open('$OBSIDIAN_HOTKEYS', 'w') as f:
+    json.dump(hotkeys, f, indent=2)
+    f.write('\n')
+"
+    echo "Removed Obsidian line-swap hotkeys"
+fi
+
+# 7. Remove /etc/hosts alias
+if grep -q "^127.0.0.1.*locus$" /etc/hosts 2>/dev/null; then
+    echo ""
+    echo "To remove the 'locus' host alias, run:"
+    echo "  sudo sed -i '' '/^127.0.0.1.*locus$/d' /etc/hosts"
+    echo ""
+fi
+
+# 8. Prompt for PRIORITIES.md
 if [ -f "$VAULT_DIR/PRIORITIES.md" ]; then
     read -p "Delete $VAULT_DIR/PRIORITIES.md? This removes all your priorities. [y/N] " -r
     if [[ $REPLY =~ ^[Yy]$ ]]; then
@@ -43,7 +78,18 @@ if [ -f "$VAULT_DIR/PRIORITIES.md" ]; then
     fi
 fi
 
-# 5. Prompt for project directory
+# 9. Prompt for Projects directory
+if [ -d "$VAULT_DIR/Projects" ]; then
+    read -p "Delete $VAULT_DIR/Projects/ directory? [y/N] " -r
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        rm -rf "$VAULT_DIR/Projects"
+        echo "Removed: Projects/"
+    else
+        echo "Kept: Projects/"
+    fi
+fi
+
+# 10. Prompt for project directory
 read -p "Delete $LOCUS_DIR/ project directory? [y/N] " -r
 if [[ $REPLY =~ ^[Yy]$ ]]; then
     rm -rf "$LOCUS_DIR"
@@ -52,7 +98,7 @@ else
     echo "Kept: $LOCUS_DIR"
 fi
 
-# 6. Reload Hammerspoon if running
+# 11. Reload Hammerspoon if running
 if pgrep -x Hammerspoon > /dev/null 2>&1; then
     hs -c "hs.reload()" 2>/dev/null && echo "Hammerspoon reloaded" || true
 fi

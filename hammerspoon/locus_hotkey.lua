@@ -1,7 +1,7 @@
 -- Locus hotkeys (chord: Ctrl+Shift+L, then second key)
 -- Ctrl+Shift+L -> L: quick note capture
--- Ctrl+Shift+L -> S: flash status on screen
 -- Ctrl+Shift+L -> T: open Claude Code for priority conversation
+-- Ctrl+Shift+L -> U: open web UI
 
 local function lcRun(args, callback)
   hs.task.new("/bin/zsh", function(code, stdout, stderr)
@@ -32,16 +32,6 @@ local function handleNote()
   end
 end
 
-local function handleStatus()
-  lcRun("status", function(code, stdout)
-    if code == 0 and stdout and stdout ~= "" then
-      hs.alert.show(stdout:sub(1, 500), nil, nil, 5)
-    else
-      hs.alert.show("No priorities set", nil, nil, 2)
-    end
-  end)
-end
-
 local function handleThink()
   local script = [[
     tell application "Terminal"
@@ -54,7 +44,7 @@ end
 
 local function enterLocusMode()
   exitLocusMode()
-  hs.alert.show("Locus: [L]note  [S]tatus  [T]hink", nil, nil, 3)
+  hs.alert.show("Locus: [L]note  [T]hink  [U]I", nil, nil, 3)
 
   locusTap = hs.eventtap.new({hs.eventtap.event.types.keyDown}, function(event)
     local key = hs.keycodes.map[event:getKeyCode()]
@@ -62,10 +52,10 @@ local function enterLocusMode()
 
     if key == "l" then
       hs.timer.doAfter(0.05, handleNote)
-    elseif key == "s" then
-      handleStatus()
     elseif key == "t" then
       handleThink()
+    elseif key == "u" then
+      hs.urlevent.openURL("http://locus:5790")
     end
 
     return true

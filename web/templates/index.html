@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Locus</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="container">
+    <h1>Locus</h1>
+
+    <div class="section">
+      <div class="section-header active-header">
+        Active <span class="section-count">(0)</span>
+      </div>
+      <div class="task-list" id="active-list" data-section="active"></div>
+    </div>
+
+    <div class="section">
+      <div class="section-header next-header">
+        Up Next <span class="section-count">(0)</span>
+      </div>
+      <div class="task-list" id="next-list" data-section="up_next"></div>
+    </div>
+
+    <div class="section">
+      <div class="section-header projects-header" id="projects-header-toggle">
+        Projects
+      </div>
+      <div class="add-inline add-project-inline">
+        <input type="text" id="add-project-input" placeholder="New project name...">
+        <button id="add-project-btn">Add</button>
+      </div>
+      <div id="project-list"></div>
+    </div>
+
+    <div class="section done-section">
+      <div class="section-header done-header">
+        Done <span class="section-count">(0)</span>
+      </div>
+      <div id="done-list"></div>
+    </div>
+  </div>
+
+  <button class="claude-btn" id="claude-btn">Talk to Claude</button>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

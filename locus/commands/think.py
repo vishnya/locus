@@ -9,17 +9,25 @@ def run():
     print("CURRENT STATE:")
     print()
 
-    if p.focus:
-        print(f"Focus: {p.focus} (since {p.focus_since})")
+    if p.active:
+        print("Active:")
+        for t in p.active:
+            tag = f"[{t.project}] " if t.project else ""
+            print(f"  [ ] {tag}{t.text}")
         print()
 
-    for proj in p.projects:
-        tasks = proj.tasks()
-        pending = [t for t in tasks if not t.done]
-        focus_marker = " [FOCUS]" if p.focus and p.focus.lower() == proj.name.lower() else ""
-        print(f"{proj.name}{focus_marker}:")
-        for t in pending:
-            print(f"  [ ] {t.text}")
+    if p.up_next:
+        print("Up Next:")
+        for t in p.up_next:
+            tag = f"[{t.project}] " if t.project else ""
+            print(f"  [ ] {tag}{t.text}")
+        print()
+
+    if p.projects:
+        print("Projects:")
+        for proj in p.projects:
+            desc = f" -- {proj.description}" if proj.description else ""
+            print(f"  {proj.name}{desc}")
         print()
 
     if p.notes:
@@ -29,7 +37,7 @@ def run():
         print()
 
     if p.done:
-        print(f"Done today: {len(p.done)} items")
+        print(f"Done: {len(p.done)} items")
         print()
 
     print("Talk to Claude about what to prioritize next.")
