@@ -25,6 +25,11 @@ def vault_path() -> Path:
     return Path(os.environ.get("LOCUS_VAULT", DEFAULT_VAULT_PATH))
 
 
+def user_context_path() -> Path:
+    """User context file lives in the Obsidian vault alongside PRIORITIES.md."""
+    return vault_path().parent / "About Me.md"
+
+
 @dataclass
 class Task:
     text: str
@@ -32,12 +37,14 @@ class Task:
     done: bool = False
     notes: list[str] = field(default_factory=list)
     deadline: str = ""  # ISO date string, e.g. "2026-03-20"
+    priority: int = 0  # 0=normal, 1=important (!), 2=critical (!!)
 
     def to_lines(self) -> list[str]:
         check = "x" if self.done else " "
         tag = f"[{self.project}] " if self.project else ""
         dl = f" @due({self.deadline})" if self.deadline else ""
-        lines = [f"- [{check}] {tag}{self.text}{dl}"]
+        pri = f" @p({self.priority})" if self.priority else ""
+        lines = [f"- [{check}] {tag}{self.text}{dl}{pri}"]
         for note in self.notes:
             lines.append(f"  - note: {note}")
         return lines
@@ -51,9 +58,13 @@ class ProjectInfo:
     name: str
     description: str = ""
     tasks: list = field(default_factory=list)  # list[Task]
+    archived: bool = False
 
     def to_lines(self) -> list[str]:
-        lines = [f"### {self.name}"]
+        header = f"### {self.name}"
+        if self.archived:
+            header += " [archived]"
+        lines = [header]
         if self.description:
             lines.append(self.description)
         for task in self.tasks:
@@ -99,15 +110,21 @@ def _parse_task(line: str) -> Task | None:
         return None
     text = m.group(3)
     deadline = ""
-    due_match = re.search(r"\s*@due\((\d{4}-\d{2}-\d{2})\)\s*$", text)
+    priority = 0
+    due_match = re.search(r"\s*@due\((\d{4}-\d{2}-\d{2})\)", text)
     if due_match:
         deadline = due_match.group(1)
-        text = text[:due_match.start()]
+        text = text[:due_match.start()] + text[due_match.end():]
+    pri_match = re.search(r"\s*@p\(([12])\)", text)
+    if pri_match:
+        priority = int(pri_match.group(1))
+        text = text[:pri_match.start()] + text[pri_match.end():]
     return Task(
-        text=text,
+        text=text.strip(),
         project=m.group(2) or "",
         done=m.group(1) == "x",
         deadline=deadline,
+        priority=priority,
     )
 
 
@@ -192,7 +209,11 @@ def parse(content: str) -> Priorities:
         # Parse projects
         elif section == "projects":
             if stripped.startswith("### "):
-                current_project = ProjectInfo(name=stripped[4:].strip())
+                proj_name = stripped[4:].strip()
+                archived = proj_name.endswith(" [archived]")
+                if archived:
+                    proj_name = proj_name[:-11].strip()
+                current_project = ProjectInfo(name=proj_name, archived=archived)
                 p.projects.append(current_project)
             elif current_project is not None:
                 task = _parse_task(stripped)

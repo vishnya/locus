@@ -39,6 +39,23 @@ function render() {
   document.querySelector(".active-header .section-count").textContent = `(${state.active.length})`;
   document.querySelector(".next-header .section-count").textContent = `(${state.up_next.length})`;
   document.querySelector(".done-header .section-count").textContent = `(${state.done.length})`;
+  syncTaskSectionLevel("active-section", "active-list", "active");
+  syncTaskSectionLevel("next-section", "next-list", "up_next");
+}
+
+function syncTaskSectionLevel(sectionId, listId, stateKey) {
+  const section = document.getElementById(sectionId);
+  if (section.classList.contains("collapsed")) {
+    sectionExpandLevels[stateKey] = 0;
+    return;
+  }
+  const wrappers = document.querySelectorAll(`#${listId} .task-wrapper`);
+  if (wrappers.length === 0) {
+    sectionExpandLevels[stateKey] = 1;
+    return;
+  }
+  const allExpanded = Array.from(wrappers).every((w) => w.classList.contains("expanded"));
+  sectionExpandLevels[stateKey] = allExpanded ? 2 : 1;
 }
 
 // Track which tasks are expanded (by section:index key)
@@ -216,6 +233,8 @@ function buildTaskEl(task, section, index, opts = {}) {
   // Double click on text = edit
   div.addEventListener("click", (e) => {
     if (e.target.tagName === "INPUT" || e.target.tagName === "BUTTON") return;
+    if (e.target.isContentEditable) return;
+    if (e.target.closest(".task-priority")) return;
     if (expandedTasks.has(key)) expandedTasks.delete(key);
     else expandedTasks.add(key);
     wrapper.classList.toggle("expanded");
@@ -237,16 +256,26 @@ function buildTaskEl(task, section, index, opts = {}) {
     e.stopPropagation();
     text.contentEditable = true;
     text.focus();
+    const range = document.createRange();
+    range.selectNodeContents(text);
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
   });
   text.addEventListener("blur", () => {
     text.contentEditable = false;
-    if (text.textContent !== task.text) {
-      if (opts.editHandler) opts.editHandler(text.textContent);
-      else api("task/edit", { section, index, text: text.textContent });
+    const newText = text.textContent.trim();
+    if (newText && newText !== task.text) {
+      if (opts.editHandler) opts.editHandler(newText);
+      else api("task/edit", { section, index, text: newText });
     }
   });
   text.addEventListener("keydown", (e) => {
     if (e.key === "Enter") { e.preventDefault(); text.blur(); }
+    if (e.key === "Escape") { text.textContent = task.text; text.blur(); }
+  });
+  text.addEventListener("click", (e) => {
+    if (text.isContentEditable) e.stopPropagation();
   });
 
   // Project pill (skip for project-internal tasks)
@@ -282,61 +311,82 @@ function buildTaskEl(task, section, index, opts = {}) {
     }
   });
 
+  // Priority indicator (clickable !/!! toggle)
+  const pri = document.createElement("span");
+  pri.className = "task-priority";
+  if (task.priority === 2) pri.classList.add("task-priority-2");
+  else if (task.priority === 1) pri.classList.add("task-priority-1");
+  pri.innerHTML = '<span class="pri-mark" data-n="1">!</span><span class="pri-mark" data-n="2">!</span>';
+  pri.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const mark = e.target.closest(".pri-mark");
+    if (!mark) return;
+    const clicked = parseInt(mark.dataset.n);
+    // Click highest active mark to deselect one level; click higher to escalate
+    let newPri;
+    if (clicked === task.priority) newPri = clicked - 1;  // toggle down (2→1, 1→0)
+    else newPri = clicked;
+    api("task/priority", { section, index, priority: newPri });
+  });
+
   div.appendChild(cb);
+  div.appendChild(pri);
   div.appendChild(text);
   div.appendChild(del);
-  if (task.deadline) {
+  {
     const dlPill = document.createElement("span");
-    dlPill.className = "task-deadline " + deadlineClass(task.deadline);
-    dlPill.textContent = deadlineLabel(task.deadline);
-    dlPill.title = task.deadline;
+    if (task.deadline) {
+      dlPill.className = "task-deadline " + deadlineClass(task.deadline);
+      dlPill.textContent = deadlineLabel(task.deadline);
+      dlPill.title = task.deadline;
+    } else {
+      dlPill.className = "task-deadline task-deadline-empty";
+      dlPill.textContent = "due";
+    }
+    dlPill.style.cursor = "pointer";
+    dlPill.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const input = document.createElement("input");
+      input.type = "text";
+      input.className = "task-deadline-picker";
+      input.value = task.deadline || "";
+      input.placeholder = "tomorrow, fri, 3d...";
+      dlPill.replaceWith(input);
+      input.focus();
+      if (task.deadline) input.select();
+      const commit = () => {
+        const parsed = parseNaturalDate(input.value);
+        if (parsed) {
+          api("task/deadline", { section, index, deadline: parsed });
+        } else {
+          input.replaceWith(dlPill);
+        }
+      };
+      input.addEventListener("keydown", (ev) => {
+        ev.stopPropagation();
+        if (ev.key === "Enter") { ev.preventDefault(); commit(); }
+        if (ev.key === "Escape") { input.replaceWith(dlPill); }
+      });
+      input.addEventListener("blur", commit);
+    });
     div.appendChild(dlPill);
+    if (task.deadline) {
+      const dlClear = document.createElement("button");
+      dlClear.className = "task-deadline-clear";
+      dlClear.textContent = "\u00d7";
+      dlClear.title = "Remove deadline";
+      dlClear.addEventListener("click", (e) => {
+        e.stopPropagation();
+        api("task/deadline", { section, index, deadline: "" });
+      });
+      div.appendChild(dlClear);
+    }
   }
   wrapper.appendChild(div);
 
   // Expandable sub-content
   const sub = document.createElement("div");
   sub.className = "task-sub";
-
-  // Deadline row
-  const dlRow = document.createElement("div");
-  dlRow.className = "task-sub-row task-deadline-row";
-  const dlLabel = document.createElement("span");
-  dlLabel.className = "task-sub-label";
-  dlLabel.textContent = "Due:";
-  const dlInput = document.createElement("input");
-  dlInput.type = "text";
-  dlInput.className = "task-deadline-input";
-  dlInput.placeholder = "tomorrow, fri, 3d, mar 20...";
-  dlInput.value = task.deadline || "";
-  dlInput.addEventListener("click", (e) => e.stopPropagation());
-  dlInput.addEventListener("keydown", (e) => {
-    e.stopPropagation();
-    if (e.key === "Enter") {
-      e.preventDefault();
-      const parsed = parseNaturalDate(dlInput.value);
-      if (parsed) api("task/deadline", { section, index, deadline: parsed });
-      else dlInput.value = task.deadline || "";
-    }
-  });
-  dlInput.addEventListener("blur", () => {
-    const parsed = parseNaturalDate(dlInput.value);
-    if (parsed) api("task/deadline", { section, index, deadline: parsed });
-    else dlInput.value = task.deadline || "";
-  });
-  dlRow.appendChild(dlLabel);
-  dlRow.appendChild(dlInput);
-  if (task.deadline) {
-    const dlClear = document.createElement("button");
-    dlClear.className = "task-sub-delete";
-    dlClear.textContent = "\u00d7";
-    dlClear.addEventListener("click", (e) => {
-      e.stopPropagation();
-      api("task/deadline", { section, index, deadline: "" });
-    });
-    dlRow.appendChild(dlClear);
-  }
-  sub.appendChild(dlRow);
 
   // Notes (with auto-linkified URLs)
   (task.notes || []).forEach((note, ni) => {
@@ -384,163 +434,611 @@ function renderTasks(containerId, tasks, section) {
   });
 }
 
+let doneSearchQuery = "";
+let projectsExpandLevel = 1; // 0=section hidden, 1=cards collapsed, 2=cards expanded
+let sectionExpandLevels = { active: 1, up_next: 1 }; // 0=hidden, 1=tasks collapsed, 2=tasks expanded
+
 function renderDone() {
   const el = document.getElementById("done-list");
   el.innerHTML = "";
-  state.done.slice(0, 10).forEach((task, i) => {
-    const div = document.createElement("div");
-    div.className = "task";
+  const q = doneSearchQuery.toLowerCase().trim();
 
-    const cb = document.createElement("input");
-    cb.type = "checkbox"; cb.checked = true; cb.disabled = true;
+  if (q) {
+    renderDoneSearch(el, q);
+  } else {
+    renderDoneRecent(el);
+  }
+}
 
-    const text = document.createElement("div");
-    text.className = "task-text";
-    text.textContent = task.text;
+function renderDoneRecent(el) {
+  if (state.done.length === 0) return;
 
-    const proj = document.createElement("span");
-    proj.className = "task-project";
-    proj.textContent = task.project || "";
-    const doneColor = getProjectColor(task.project);
-    if (doneColor) {
-      proj.style.background = doneColor.bg;
-      proj.style.color = doneColor.fg;
-      proj.style.opacity = "0.5";
+  const label = document.createElement("div");
+  label.className = "done-recent-label";
+  label.textContent = "Recent";
+  el.appendChild(label);
+
+  const scroll = document.createElement("div");
+  scroll.className = "done-recent-scroll";
+  state.done.slice(0, 10).forEach((task) => {
+    scroll.appendChild(buildDoneRow(task));
+  });
+  el.appendChild(scroll);
+}
+
+function renderDoneSearch(el, q) {
+  // Find all projects matching the query (active or archived)
+  const matchedProjects = state.projects.filter((p) =>
+    p.name.toLowerCase().includes(q)
+  );
+
+  // Find done tasks matching by text (not project name -- those show under project cards)
+  const taskTextMatches = state.done.filter((t) =>
+    t.text.toLowerCase().includes(q) &&
+    !matchedProjects.some((p) => p.name === t.project)
+  );
+
+  let hasResults = false;
+
+  // Show each matching project as a card with its history
+  matchedProjects.forEach((proj) => {
+    const projDone = state.done.filter((t) => t.project === proj.name);
+    const backlogTasks = proj.tasks || [];
+    if (projDone.length === 0 && backlogTasks.length === 0 && isProjectActive(proj)) return;
+
+    hasResults = true;
+    const card = document.createElement("div");
+    card.className = "done-project-card";
+
+    // Card header
+    const header = document.createElement("div");
+    header.className = "done-project-header";
+    const nameEl = document.createElement("span");
+    nameEl.className = "done-project-name";
+    nameEl.textContent = proj.name;
+    const projColor = getProjectColor(proj.name);
+    if (projColor) nameEl.style.color = projColor.fg;
+    header.appendChild(nameEl);
+
+    if (proj.description) {
+      const desc = document.createElement("span");
+      desc.className = "done-project-desc";
+      desc.textContent = proj.description;
+      header.appendChild(desc);
     }
 
-    div.appendChild(cb);
-    div.appendChild(text);
-    if (task.project) div.appendChild(proj);
-    el.appendChild(div);
+    if (!isProjectActive(proj)) {
+      const restoreBtn = document.createElement("button");
+      restoreBtn.className = "done-project-restore";
+      restoreBtn.textContent = "Restore";
+      restoreBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        // Swap button for task input
+        restoreBtn.remove();
+        const inputRow = document.createElement("div");
+        inputRow.className = "done-search-restore-row";
+        const input = document.createElement("input");
+        input.type = "text";
+        input.className = "done-search-restore-input";
+        input.placeholder = "Add a task to reactivate...";
+        inputRow.appendChild(input);
+        header.after(inputRow);
+        input.focus();
+        input.addEventListener("keydown", (ev) => {
+          ev.stopPropagation();
+          if (ev.key === "Enter") {
+            ev.preventDefault();
+            const text = input.value.trim();
+            if (text) {
+              fetch("/api/project/archive", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ name: proj.name, archived: false }),
+              }).then(() => {
+                api("project/task/add", { name: proj.name, text });
+                document.getElementById("done-search-input").value = "";
+                doneSearchQuery = "";
+              });
+            }
+          } else if (ev.key === "Escape") {
+            inputRow.remove();
+            header.appendChild(restoreBtn);
+          }
+        });
+      });
+      header.appendChild(restoreBtn);
+    }
+
+    card.appendChild(header);
+
+    // Backlog tasks still in the project
+    if (backlogTasks.length > 0) {
+      const section = document.createElement("div");
+      section.className = "done-project-section";
+      const sLabel = document.createElement("div");
+      sLabel.className = "done-search-group-label";
+      sLabel.textContent = "Backlog";
+      section.appendChild(sLabel);
+      backlogTasks.forEach((t) => {
+        const row = document.createElement("div");
+        row.className = "done-project-task";
+        row.textContent = t.text;
+        section.appendChild(row);
+      });
+      card.appendChild(section);
+    }
+
+    // Done tasks for this project
+    if (projDone.length > 0) {
+      const section = document.createElement("div");
+      section.className = "done-project-section";
+      const sLabel = document.createElement("div");
+      sLabel.className = "done-search-group-label";
+      sLabel.textContent = `Completed (${projDone.length})`;
+      section.appendChild(sLabel);
+      projDone.slice(0, 10).forEach((t) => {
+        const doneIdx = state.done.indexOf(t);
+        const row = document.createElement("div");
+        row.className = "done-project-task done-project-task-completed";
+        const hasDetail = (t.notes && t.notes.length > 0) || t.deadline;
+        if (hasDetail) row.classList.add("has-detail");
+
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.checked = true;
+        cb.className = "done-project-task-cb";
+        if (doneIdx >= 0) {
+          cb.addEventListener("change", (e) => {
+            e.stopPropagation();
+            api("task/undone", { index: doneIdx });
+            document.getElementById("done-search-input").value = "";
+            doneSearchQuery = "";
+          });
+        }
+        row.appendChild(cb);
+
+        const textEl = document.createElement("span");
+        textEl.textContent = t.text;
+        row.appendChild(textEl);
+
+        if (hasDetail) {
+          const detail = document.createElement("div");
+          detail.className = "done-task-detail";
+          if (t.deadline) {
+            const dlEl = document.createElement("div");
+            dlEl.className = "done-task-detail-line";
+            dlEl.textContent = "Due: " + t.deadline;
+            detail.appendChild(dlEl);
+          }
+          (t.notes || []).forEach((note) => {
+            const noteEl = document.createElement("div");
+            noteEl.className = "done-task-detail-line";
+            linkifyInto(noteEl, note);
+            detail.appendChild(noteEl);
+          });
+          row.appendChild(detail);
+          row.addEventListener("click", (e) => {
+            if (e.target.tagName === "INPUT") return;
+            row.classList.toggle("expanded");
+          });
+        }
+
+        section.appendChild(row);
+      });
+      if (projDone.length > 10) {
+        const more = document.createElement("div");
+        more.className = "done-project-task";
+        more.style.color = "#445";
+        more.textContent = `+${projDone.length - 10} more`;
+        section.appendChild(more);
+      }
+      card.appendChild(section);
+    }
+
+    el.appendChild(card);
   });
+
+  // Show non-project task matches
+  if (taskTextMatches.length > 0) {
+    hasResults = true;
+    const group = document.createElement("div");
+    group.className = "done-search-group";
+    const label = document.createElement("div");
+    label.className = "done-search-group-label";
+    label.textContent = "Other completed tasks";
+    group.appendChild(label);
+    taskTextMatches.slice(0, 15).forEach((task) => {
+      group.appendChild(buildDoneRow(task));
+    });
+    if (taskTextMatches.length > 15) {
+      const more = document.createElement("div");
+      more.style.cssText = "font-size:11px;color:#445;padding:4px 12px;";
+      more.textContent = `+${taskTextMatches.length - 15} more`;
+      group.appendChild(more);
+    }
+    el.appendChild(group);
+  }
+
+  if (!hasResults) {
+    const empty = document.createElement("div");
+    empty.style.cssText = "font-size:12px;color:#445;padding:12px;text-align:center;";
+    empty.textContent = "No results";
+    el.appendChild(empty);
+  }
+}
+
+function buildDoneRow(task) {
+  // Find the index in state.done for this task
+  const doneIdx = state.done.indexOf(task);
+  const hasDetail = (task.notes && task.notes.length > 0) || task.deadline;
+  const wrapper = document.createElement("div");
+  wrapper.className = "done-row-wrapper";
+  if (hasDetail) wrapper.classList.add("has-detail");
+
+  const div = document.createElement("div");
+  div.className = "task";
+  div.style.cursor = hasDetail ? "pointer" : "default";
+
+  const cb = document.createElement("input");
+  cb.type = "checkbox"; cb.checked = true;
+  if (doneIdx >= 0) {
+    cb.addEventListener("change", () => api("task/undone", { index: doneIdx }));
+  }
+
+  const text = document.createElement("div");
+  text.className = "task-text";
+  text.textContent = task.text;
+
+  const proj = document.createElement("span");
+  proj.className = "task-project";
+  proj.textContent = task.project || "";
+  const doneColor = getProjectColor(task.project);
+  if (doneColor) {
+    proj.style.background = doneColor.bg;
+    proj.style.color = doneColor.fg;
+    proj.style.opacity = "0.5";
+  }
+
+  const del = document.createElement("button");
+  del.className = "task-delete";
+  del.textContent = "\u{1F5D1}";
+  del.title = "Delete";
+  if (doneIdx >= 0) {
+    del.addEventListener("click", (e) => {
+      e.stopPropagation();
+      api("task/delete", { section: "done", index: doneIdx });
+    });
+  }
+
+  div.appendChild(cb);
+  if (task.priority) {
+    const pri = document.createElement("span");
+    pri.className = "task-priority task-priority-" + task.priority;
+    pri.style.opacity = "0.5";
+    pri.textContent = task.priority === 2 ? "!!" : "!";
+    div.appendChild(pri);
+  }
+  div.appendChild(text);
+  if (task.project) div.appendChild(proj);
+  div.appendChild(del);
+  wrapper.appendChild(div);
+
+  if (hasDetail) {
+    const detail = document.createElement("div");
+    detail.className = "done-task-detail";
+    if (task.deadline) {
+      const dlEl = document.createElement("div");
+      dlEl.className = "done-task-detail-line";
+      dlEl.textContent = "Due: " + task.deadline;
+      detail.appendChild(dlEl);
+    }
+    (task.notes || []).forEach((note) => {
+      const noteEl = document.createElement("div");
+      noteEl.className = "done-task-detail-line";
+      linkifyInto(noteEl, note);
+      detail.appendChild(noteEl);
+    });
+    wrapper.appendChild(detail);
+    div.addEventListener("click", () => wrapper.classList.toggle("expanded"));
+  }
+
+  return wrapper;
+}
+
+function isProjectActive(proj) {
+  if (proj.archived) return false;
+  if ((proj.tasks || []).length > 0) return true;
+  // Check if any active/up_next tasks reference this project
+  const hasRef = [...state.active, ...state.up_next].some((t) => t.project === proj.name);
+  return hasRef;
+}
+
+function buildProjectCard(proj, collapsed) {
+  const div = document.createElement("div");
+  div.className = "project";
+  div.dataset.name = proj.name;
+  if (collapsed[proj.name] === undefined || collapsed[proj.name]) {
+    div.classList.add("collapsed");
+  }
+
+  div.draggable = true;
+  div.addEventListener("dragstart", (e) => {
+    // Only start project drag from the header area, not from body inputs/editable
+    if (e.target.closest(".project-body")) { e.preventDefault(); return; }
+    projectDragName = proj.name;
+    div.classList.add("dragging");
+    e.dataTransfer.effectAllowed = "move";
+    e.stopPropagation();
+  });
+  div.addEventListener("dragend", () => {
+    div.classList.remove("dragging");
+    document.querySelectorAll(".project.drag-over-project").forEach((el) => el.classList.remove("drag-over-project"));
+    projectDragName = null;
+  });
+  div.addEventListener("dragover", (e) => {
+    if (!projectDragName || projectDragName === proj.name) return;
+    e.preventDefault();
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = "move";
+    document.querySelectorAll(".project.drag-over-project").forEach((el) => el.classList.remove("drag-over-project"));
+    div.classList.add("drag-over-project");
+  });
+  div.addEventListener("dragleave", (e) => {
+    if (!e.relatedTarget || !div.contains(e.relatedTarget)) {
+      div.classList.remove("drag-over-project");
+    }
+  });
+  div.addEventListener("drop", (e) => {
+    if (!projectDragName || projectDragName === proj.name) return;
+    e.preventDefault();
+    e.stopPropagation();
+    div.classList.remove("drag-over-project");
+    // Reorder: move dragged project before or after this one based on cursor position
+    const rect = div.getBoundingClientRect();
+    const after = e.clientY > rect.top + rect.height / 2;
+    const names = state.projects.filter(isProjectActive).map((p) => p.name);
+    const fromIdx = names.indexOf(projectDragName);
+    if (fromIdx === -1) return;
+    names.splice(fromIdx, 1);
+    let toIdx = names.indexOf(proj.name);
+    if (after) toIdx++;
+    names.splice(toIdx, 0, projectDragName);
+    // Include inactive projects at the end to preserve full order
+    const allNames = names.concat(state.projects.filter((p) => !isProjectActive(p)).map((p) => p.name));
+    api("project/reorder", { order: allNames });
+    projectDragName = null;
+  });
+
+  const header = document.createElement("div");
+  header.className = "project-header";
+  header.addEventListener("click", () => div.classList.toggle("collapsed"));
+
+  const arrow = document.createElement("span");
+  arrow.className = "project-arrow";
+  arrow.textContent = "\u25b6";
+
+  const name = document.createElement("span");
+  name.className = "project-name";
+  name.textContent = proj.name;
+  const projColor = getProjectColor(proj.name);
+  if (projColor) name.style.color = projColor.fg;
+
+  const backlogCount = (proj.tasks || []).length;
+  const badge = document.createElement("span");
+  badge.className = "project-badge";
+  badge.textContent = backlogCount > 0 ? backlogCount : "";
+
+  header.appendChild(arrow);
+  header.appendChild(name);
+  header.appendChild(badge);
+  div.appendChild(header);
+
+  const body = document.createElement("div");
+  body.className = "project-body";
+
+  const desc = document.createElement("div");
+  desc.className = "project-desc";
+  desc.contentEditable = true;
+  desc.textContent = proj.description || "Add description...";
+  desc.addEventListener("click", (e) => e.stopPropagation());
+  desc.addEventListener("focus", () => {
+    if (desc.textContent === "Add description...") desc.textContent = "";
+  });
+  desc.addEventListener("blur", () => {
+    if (desc.textContent !== proj.description) {
+      api("project/edit", { name: proj.name, description: desc.textContent });
+    }
+  });
+  body.appendChild(desc);
+
+  const taskList = document.createElement("div");
+  taskList.className = "task-list project-task-list";
+  taskList.dataset.section = "project:" + proj.name;
+  taskList.addEventListener("dragover", onDragOver);
+  taskList.addEventListener("dragleave", onDragLeave);
+  taskList.addEventListener("drop", onDrop);
+
+  (proj.tasks || []).forEach((task, i) => {
+    const section = "project:" + proj.name;
+    taskList.appendChild(buildTaskEl(task, section, i, {
+      doneHandler: () => api("project/task/done", { name: proj.name, index: i }),
+      deleteHandler: () => api("project/task/delete", { name: proj.name, index: i }),
+    }));
+  });
+
+  body.appendChild(taskList);
+
+  const addRow = document.createElement("div");
+  addRow.className = "project-add-row";
+  const addInput = document.createElement("input");
+  addInput.type = "text";
+  addInput.placeholder = "Add task...";
+  addInput.addEventListener("click", (e) => e.stopPropagation());
+  addInput.addEventListener("keydown", (e) => {
+    e.stopPropagation();
+    if (e.key === "Enter") {
+      e.preventDefault();
+      const val = addInput.value.trim();
+      if (val) { addInput.value = ""; api("project/task/add", { name: proj.name, text: val }); }
+    }
+  });
+  addRow.appendChild(addInput);
+  body.appendChild(addRow);
+
+  div.appendChild(body);
+  return div;
 }
 
 function renderProjects() {
   const el = document.getElementById("project-list");
+  const prevVisible = new Set();
   const collapsed = {};
   el.querySelectorAll(".project").forEach((p) => {
     const name = p.dataset.name;
-    if (name) collapsed[name] = p.classList.contains("collapsed");
-  });
-
-  el.innerHTML = "";
-  state.projects.forEach((proj) => {
-    const div = document.createElement("div");
-    div.className = "project";
-    div.dataset.name = proj.name;
-    if (collapsed[proj.name] === undefined || collapsed[proj.name]) {
-      div.classList.add("collapsed");
+    if (name) {
+      prevVisible.add(name);
+      collapsed[name] = p.classList.contains("collapsed");
     }
-
-    const header = document.createElement("div");
-    header.className = "project-header";
-    header.addEventListener("click", () => div.classList.toggle("collapsed"));
-
-    const arrow = document.createElement("span");
-    arrow.className = "project-arrow";
-    arrow.textContent = "\u25b6";
-
-    const name = document.createElement("span");
-    name.className = "project-name";
-    name.textContent = proj.name;
-    const projColor = getProjectColor(proj.name);
-    if (projColor) name.style.color = projColor.fg;
-
-    const backlogCount = (proj.tasks || []).length;
-    const badge = document.createElement("span");
-    badge.className = "project-badge";
-    badge.textContent = backlogCount > 0 ? backlogCount : "";
-
-    header.appendChild(arrow);
-    header.appendChild(name);
-    header.appendChild(badge);
-    div.appendChild(header);
-
-    const body = document.createElement("div");
-    body.className = "project-body";
-
-    const desc = document.createElement("div");
-    desc.className = "project-desc";
-    desc.contentEditable = true;
-    desc.textContent = proj.description || "Add description...";
-    desc.addEventListener("click", (e) => e.stopPropagation());
-    desc.addEventListener("focus", () => {
-      if (desc.textContent === "Add description...") desc.textContent = "";
-    });
-    desc.addEventListener("blur", () => {
-      if (desc.textContent !== proj.description) {
-        api("project/edit", { name: proj.name, description: desc.textContent });
-      }
-    });
-    body.appendChild(desc);
-
-    const taskList = document.createElement("div");
-    taskList.className = "task-list project-task-list";
-    taskList.dataset.section = "project:" + proj.name;
-    taskList.addEventListener("dragover", onDragOver);
-    taskList.addEventListener("dragleave", onDragLeave);
-    taskList.addEventListener("drop", onDrop);
-
-    (proj.tasks || []).forEach((task, i) => {
-      const section = "project:" + proj.name;
-      taskList.appendChild(buildTaskEl(task, section, i, {
-        doneHandler: () => api("project/task/done", { name: proj.name, index: i }),
-        deleteHandler: () => api("project/task/delete", { name: proj.name, index: i }),
-      }));
-    });
-
-    body.appendChild(taskList);
-
-    const addRow = document.createElement("div");
-    addRow.className = "project-add-row";
-    const addInput = document.createElement("input");
-    addInput.type = "text";
-    addInput.placeholder = "Add task...";
-    addInput.addEventListener("click", (e) => e.stopPropagation());
-    addInput.addEventListener("keydown", (e) => {
-      e.stopPropagation();
-      if (e.key === "Enter") {
-        e.preventDefault();
-        const val = addInput.value.trim();
-        if (val) { addInput.value = ""; api("project/task/add", { name: proj.name, text: val }); }
-      }
-    });
-    addRow.appendChild(addInput);
-    body.appendChild(addRow);
-
-    div.appendChild(body);
-    el.appendChild(div);
   });
+  el.innerHTML = "";
+
+  const visible = state.projects.filter(isProjectActive);
+  visible.forEach((proj) => {
+    // New projects that just became active start expanded
+    if (!prevVisible.has(proj.name)) {
+      collapsed[proj.name] = false;
+    }
+    el.appendChild(buildProjectCard(proj, collapsed));
+  });
+
+  // If a project just appeared and the section is collapsed, open it
+  const hasNew = visible.some((p) => !prevVisible.has(p.name));
+  if (hasNew) {
+    const section = document.getElementById("projects-section");
+    section.classList.remove("collapsed");
+    projectsExpandLevel = Math.max(projectsExpandLevel, 1);
+  }
+
+  // Sync expand level from actual DOM state
+  syncProjectsExpandLevel();
+}
+
+function syncProjectsExpandLevel() {
+  const section = document.getElementById("projects-section");
+  if (section.classList.contains("collapsed")) {
+    projectsExpandLevel = 0;
+    return;
+  }
+  const cards = document.querySelectorAll("#project-list .project");
+  if (cards.length === 0) {
+    projectsExpandLevel = 1;
+    return;
+  }
+  const allExpanded = Array.from(cards).every((p) => !p.classList.contains("collapsed"));
+  projectsExpandLevel = allExpanded ? 2 : 1;
 }
 
 document.addEventListener("DOMContentLoaded", () => {
-  document.getElementById("projects-header-toggle").addEventListener("click", () => {
-    const projects = document.querySelectorAll("#project-list .project");
-    const allCollapsed = Array.from(projects).every((p) => p.classList.contains("collapsed"));
-    projects.forEach((p) => {
-      if (allCollapsed) p.classList.remove("collapsed");
-      else p.classList.add("collapsed");
+  // Collapsible section headers (History, Done)
+  document.querySelectorAll(".collapsible-header").forEach((header) => {
+    header.addEventListener("click", () => {
+      header.closest(".section").classList.toggle("collapsed");
     });
   });
 
-  document.getElementById("add-project-btn").addEventListener("click", () => {
+  // Active / Up Next: 3-state cycle (hidden → tasks collapsed → tasks expanded → hidden)
+  function setupTaskSectionCycle(headerId, sectionId, listId, stateKey) {
+    document.getElementById(headerId).addEventListener("click", () => {
+      const section = document.getElementById(sectionId);
+      const wrappers = document.querySelectorAll(`#${listId} .task-wrapper`);
+      const level = sectionExpandLevels[stateKey];
+
+      if (level === 0) {
+        section.classList.remove("collapsed");
+        wrappers.forEach((w) => { w.classList.remove("expanded"); expandedTasks.delete(w.querySelector(".task")?.dataset.section + ":" + w.querySelector(".task")?.dataset.index); });
+        sectionExpandLevels[stateKey] = 1;
+      } else if (level === 1) {
+        wrappers.forEach((w) => { w.classList.add("expanded"); expandedTasks.add(w.querySelector(".task")?.dataset.section + ":" + w.querySelector(".task")?.dataset.index); });
+        sectionExpandLevels[stateKey] = 2;
+      } else {
+        section.classList.add("collapsed");
+        sectionExpandLevels[stateKey] = 0;
+      }
+    });
+  }
+  setupTaskSectionCycle("active-header-toggle", "active-section", "active-list", "active");
+  setupTaskSectionCycle("next-header-toggle", "next-section", "next-list", "up_next");
+
+  // Projects header: 3-state cycle (collapsed → cards collapsed → cards expanded → collapsed)
+  document.getElementById("projects-header-toggle").addEventListener("click", (e) => {
+    if (e.target.closest(".add-project-toggle")) return;
+    const section = document.getElementById("projects-section");
+    const cards = document.querySelectorAll("#project-list .project");
+
+    if (projectsExpandLevel === 0) {
+      // Open section, all cards collapsed
+      section.classList.remove("collapsed");
+      cards.forEach((p) => p.classList.add("collapsed"));
+      projectsExpandLevel = 1;
+    } else if (projectsExpandLevel === 1) {
+      // Expand all cards
+      cards.forEach((p) => p.classList.remove("collapsed"));
+      projectsExpandLevel = 2;
+    } else {
+      // Collapse entire section
+      section.classList.add("collapsed");
+      projectsExpandLevel = 0;
+    }
+  });
+
+  // New project "+" button
+  document.getElementById("add-project-toggle").addEventListener("click", (e) => {
+    e.stopPropagation();
+    const row = document.getElementById("add-project-inline");
     const input = document.getElementById("add-project-input");
-    const name = input.value.trim();
-    if (!name) return;
-    api("project/add", { name });
-    input.value = "";
+    if (row.style.display === "none") {
+      row.style.display = "block";
+      input.focus();
+    } else {
+      row.style.display = "none";
+      input.value = "";
+    }
   });
   document.getElementById("add-project-input").addEventListener("keydown", (e) => {
-    if (e.key === "Enter") document.getElementById("add-project-btn").click();
+    e.stopPropagation();
+    if (e.key === "Enter") {
+      e.preventDefault();
+      const name = e.target.value.trim();
+      if (name) {
+        e.target.value = "";
+        document.getElementById("add-project-inline").style.display = "none";
+        api("project/add", { name });
+      }
+    } else if (e.key === "Escape") {
+      e.target.value = "";
+      document.getElementById("add-project-inline").style.display = "none";
+    }
+  });
+  document.getElementById("add-project-input").addEventListener("click", (e) => {
+    e.stopPropagation();
   });
 
-  document.getElementById("claude-btn").addEventListener("click", () => {
-    fetch("/api/claude", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: "{}",
-    });
+  // Done section search
+  document.getElementById("done-search-input").addEventListener("input", (e) => {
+    doneSearchQuery = e.target.value;
+    renderDone();
   });
+  document.getElementById("done-search-input").addEventListener("keydown", (e) => {
+    e.stopPropagation();
+    if (e.key === "Escape") {
+      e.target.value = "";
+      doneSearchQuery = "";
+      renderDone();
+      e.target.blur();
+    }
+  });
+
+  initChat();
 
   document.querySelectorAll(".task-list").forEach((list) => {
     list.addEventListener("dragover", onDragOver);
@@ -549,17 +1047,359 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   document.addEventListener("keydown", (e) => {
-    if ((e.metaKey || e.ctrlKey) && e.key === "z" && !e.target.closest("input, [contenteditable]")) {
+    if ((e.metaKey || e.ctrlKey) && e.key === "z" && !e.shiftKey && !e.target.closest("input, [contenteditable]")) {
       e.preventDefault();
       api("undo");
+    }
+    if ((e.metaKey || e.ctrlKey) && e.key === "z" && e.shiftKey && !e.target.closest("input, [contenteditable]")) {
+      e.preventDefault();
+      api("redo");
     }
   });
 
   api("priorities");
 });
 
+// Chat panel
+let chatSessionId = sessionStorage.getItem("locus_chat_session") || null;
+let chatStreaming = false;
+
+function initChat() {
+  const panel = document.getElementById("chat-panel");
+  const header = document.getElementById("chat-header");
+  const input = document.getElementById("chat-input");
+  const sendBtn = document.getElementById("chat-send");
+  const newBtn = document.getElementById("chat-new-btn");
+
+  header.addEventListener("click", (e) => {
+    if (e.target === newBtn) return;
+    panel.classList.toggle("expanded");
+    if (panel.classList.contains("expanded")) {
+      chatEnsureReady();
+    }
+  });
+
+  newBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    chatStartSession();
+  });
+
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      chatSend();
+    }
+    if (e.key === "Escape") {
+      panel.classList.remove("expanded");
+    }
+  });
+
+  // Auto-resize textarea
+  input.addEventListener("input", () => {
+    input.style.height = "auto";
+    input.style.height = Math.min(input.scrollHeight, 80) + "px";
+  });
+
+  sendBtn.addEventListener("click", chatSend);
+
+  // Voice input via Web Speech API
+  const micBtn = document.getElementById("chat-mic");
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (SpeechRecognition) {
+    const recognition = new SpeechRecognition();
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.lang = "en-US";
+    let finalTranscript = "";
+    let listening = false;
+
+    micBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (listening) {
+        recognition.stop();
+      } else {
+        finalTranscript = input.value;
+        recognition.start();
+      }
+    });
+
+    recognition.addEventListener("start", () => {
+      listening = true;
+      micBtn.classList.add("mic-active");
+    });
+
+    recognition.addEventListener("end", () => {
+      listening = false;
+      micBtn.classList.remove("mic-active");
+      // Auto-send if there's content and user stopped recording
+      if (input.value.trim()) {
+        input.style.height = "auto";
+        input.style.height = Math.min(input.scrollHeight, 80) + "px";
+      }
+    });
+
+    recognition.addEventListener("result", (e) => {
+      let interim = "";
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        if (e.results[i].isFinal) {
+          finalTranscript += (finalTranscript ? " " : "") + e.results[i][0].transcript;
+        } else {
+          interim += e.results[i][0].transcript;
+        }
+      }
+      input.value = finalTranscript + (interim ? " " + interim : "");
+      input.style.height = "auto";
+      input.style.height = Math.min(input.scrollHeight, 80) + "px";
+    });
+
+    recognition.addEventListener("error", (e) => {
+      listening = false;
+      micBtn.classList.remove("mic-active");
+      if (e.error !== "aborted") console.warn("Speech recognition error:", e.error);
+    });
+  } else {
+    micBtn.style.display = "none";
+  }
+
+  // Check availability
+  fetch("/api/chat/status")
+    .then((r) => r.json())
+    .then((d) => {
+      if (!d.available) {
+        chatShowSetup();
+      }
+    })
+    .catch(() => {});
+}
+
+function chatEnsureReady() {
+  const messages = document.getElementById("chat-messages");
+  if (!chatSessionId || messages.children.length === 0) {
+    if (chatSessionId) {
+      chatRestoreSession(chatSessionId);
+    } else {
+      chatStartSession();
+    }
+  }
+}
+
+function chatRestoreSession(sessionId) {
+  const messages = document.getElementById("chat-messages");
+  messages.innerHTML = "";
+  fetch(`/api/chat/history?session_id=${sessionId}`)
+    .then((r) => r.json())
+    .then((d) => {
+      if (d.messages && d.messages.length > 0) {
+        d.messages.forEach((msg) => chatAddMessage(msg.role, msg.content));
+      } else {
+        chatShowSuggestions();
+      }
+    })
+    .catch(() => chatShowSuggestions());
+}
+
+function chatStartSession() {
+  chatSessionId = crypto.randomUUID();
+  sessionStorage.setItem("locus_chat_session", chatSessionId);
+  const messages = document.getElementById("chat-messages");
+  messages.innerHTML = "";
+
+  chatShowSuggestions();
+}
+
+function chatShowSetup() {
+  const messages = document.getElementById("chat-messages");
+  messages.innerHTML = "";
+  const div = document.createElement("div");
+  div.className = "chat-setup";
+  div.innerHTML =
+    "To use chat, set up your API key and install the SDK:<br><br>" +
+    "1. Set <code>ANTHROPIC_API_KEY</code> in <code>~/.zshrc</code><br>" +
+    '2. Run <code>pip install anthropic</code> in the locus venv<br>' +
+    "3. Restart the server";
+  messages.appendChild(div);
+}
+
+function chatShowSuggestions() {
+  const messages = document.getElementById("chat-messages");
+  const div = document.createElement("div");
+  div.className = "chat-suggestions";
+
+  const pills = [
+    { text: "Add context about myself", message: "Here's some context about me: ", id: "ctx-pill" },
+    { text: "What you know about me", action: "show-context" },
+    { text: "What I want to do now", message: "Here's what I want to do right now: " },
+    { text: "Discuss my priorities", message: "Here's what's on my plate right now, help me stack-rank these: " },
+    { text: "Update project context", message: "I want to update project context: " },
+    { text: "Add context about my project", message: "Here's some context about one of my projects: " },
+  ];
+
+  pills.forEach((pill) => {
+    const btn = document.createElement("button");
+    btn.className = "chat-suggestion";
+    if (pill.id) btn.id = pill.id;
+    btn.textContent = pill.text;
+    btn.addEventListener("click", () => {
+      if (pill.action === "show-context") {
+        div.remove();
+        chatShowStoredContext();
+        return;
+      }
+      const input = document.getElementById("chat-input");
+      input.value = pill.message;
+      input.focus();
+      input.setSelectionRange(input.value.length, input.value.length);
+      div.remove();
+    });
+    div.appendChild(btn);
+  });
+  messages.appendChild(div);
+
+  // Highlight the context pill if user context is sparse
+  fetch("/api/user-context")
+    .then((r) => r.json())
+    .then((d) => {
+      const ctxPill = document.getElementById("ctx-pill");
+      if (ctxPill && (!d.text || d.text.trim().length < 200)) {
+        ctxPill.classList.add("chat-suggestion-recommended");
+      }
+    })
+    .catch(() => {});
+}
+
+function chatShowStoredContext() {
+  const input = document.getElementById("chat-input");
+  input.value = "Give me a succinct but complete summary of everything you know about me -- my role, goals, projects, what I'm working on, and any other context you have.";
+  chatSend();
+}
+
+function chatAddAction(text) {
+  const messages = document.getElementById("chat-messages");
+  const div = document.createElement("div");
+  div.className = "chat-action";
+  div.textContent = text;
+  messages.appendChild(div);
+  messages.scrollTop = messages.scrollHeight;
+}
+
+function chatAddMessage(role, text) {
+  const messages = document.getElementById("chat-messages");
+  const div = document.createElement("div");
+  div.className = "chat-msg " + role;
+  if (role === "assistant") {
+    div.innerHTML = chatRenderMarkdown(text);
+  } else {
+    div.textContent = text;
+  }
+  messages.appendChild(div);
+  messages.scrollTop = messages.scrollHeight;
+  return div;
+}
+
+function chatRenderMarkdown(text) {
+  // Simple markdown: code blocks, inline code, bold, italic, lists
+  let html = text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+
+  // Code blocks
+  html = html.replace(/```(\w*)\n([\s\S]*?)```/g, "<pre><code>$2</code></pre>");
+
+  // Inline code
+  html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
+
+  // Bold
+  html = html.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+
+  // Italic
+  html = html.replace(/(?<!\*)\*([^*]+)\*(?!\*)/g, "<em>$1</em>");
+
+  // List items (lines starting with - or *)
+  html = html.replace(/^[\-\*] (.+)$/gm, "\u2022 $1");
+
+  return html;
+}
+
+async function chatSend() {
+  if (chatStreaming) return;
+  const input = document.getElementById("chat-input");
+  const message = input.value.trim();
+  if (!message) return;
+
+  input.value = "";
+  input.style.height = "auto";
+
+  // Remove suggestions if present
+  const suggestions = document.querySelector(".chat-suggestions");
+  if (suggestions) suggestions.remove();
+
+  chatAddMessage("user", message);
+
+  if (!chatSessionId) {
+    chatSessionId = crypto.randomUUID();
+    sessionStorage.setItem("locus_chat_session", chatSessionId);
+  }
+
+  chatStreaming = true;
+  document.getElementById("chat-send").disabled = true;
+  document.getElementById("chat-status").textContent = "thinking...";
+
+  const msgEl = chatAddMessage("assistant", "");
+  let fullText = "";
+
+  try {
+    const res = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: chatSessionId, message }),
+    });
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop();
+
+      for (const line of lines) {
+        if (!line.startsWith("data: ")) continue;
+        try {
+          const data = JSON.parse(line.slice(6));
+          if (data.type === "delta") {
+            fullText += data.text;
+            msgEl.innerHTML = chatRenderMarkdown(fullText);
+            document.getElementById("chat-messages").scrollTop =
+              document.getElementById("chat-messages").scrollHeight;
+          } else if (data.type === "action") {
+            chatAddAction(data.result);
+            api("priorities");
+          } else if (data.type === "error") {
+            fullText += "\n\nError: " + data.text;
+            msgEl.innerHTML = chatRenderMarkdown(fullText);
+          }
+        } catch (e) {}
+      }
+    }
+  } catch (e) {
+    if (!fullText) {
+      msgEl.textContent = "Connection error. Is the server running?";
+    }
+  }
+
+  chatStreaming = false;
+  document.getElementById("chat-send").disabled = false;
+  document.getElementById("chat-status").textContent = "";
+}
+
 // Drag and drop
 let dragData = null;
+let projectDragName = null;
 
 function onDragStart(e) {
   // Find the .task-wrapper or .task element

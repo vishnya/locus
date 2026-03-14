@@ -430,10 +430,11 @@ def test_undo_empty_stack(server):
 
 
 def test_undo_stack_limit(server):
+    from web.server import MAX_UNDO
     _seed()
-    for i in range(25):
+    for i in range(MAX_UNDO + 5):
         _api(server, "task/add", {"text": f"task {i}", "section": "up_next"})
-    assert len(UNDO_STACK) == 20
+    assert len(UNDO_STACK) == MAX_UNDO
 
 
 def test_undo_restores_task_edit(server):
@@ -525,4 +526,111 @@ def test_task_dict_roundtrip(server):
     save(p)
     data = _api(server, "priorities")
     t = data["active"][0]
-    assert t == {"text": "t", "project": "P", "done": False, "notes": ["n1", "n2"], "deadline": "2026-01-01"}
+    assert t == {"text": "t", "project": "P", "done": False, "notes": ["n1", "n2"], "deadline": "2026-01-01", "priority": 0}
+
+
+# =============================================================================
+# Priority
+# =============================================================================
+
+def test_set_priority(server):
+    _seed()
+    data = _api(server, "task/priority", {"section": "active", "index": 0, "priority": 2})
+    assert data["active"][0]["priority"] == 2
+
+
+def test_set_priority_up_next(server):
+    _seed()
+    data = _api(server, "task/priority", {"section": "up_next", "index": 0, "priority": 1})
+    assert data["up_next"][0]["priority"] == 1
+
+
+def test_set_priority_project_task(server):
+    _seed(projects=[ProjectInfo(name="P", tasks=[Task(text="proj task")])])
+    data = _api(server, "task/priority", {"section": "project:P", "index": 0, "priority": 2})
+    assert data["projects"][0]["tasks"][0]["priority"] == 2
+
+
+def test_clear_priority(server):
+    _seed(active=[Task(text="t", priority=2)])
+    data = _api(server, "task/priority", {"section": "active", "index": 0, "priority": 0})
+    assert data["active"][0]["priority"] == 0
+
+
+def test_priority_survives_roundtrip(server):
+    """Priority is preserved through save/load cycle."""
+    _seed(active=[Task(text="important", priority=1)])
+    data = _api(server, "priorities")
+    assert data["active"][0]["priority"] == 1
+
+
+def test_priority_undo(server):
+    _seed()
+    _api(server, "task/priority", {"section": "active", "index": 0, "priority": 2})
+    data = _api(server, "undo", {})
+    assert data["active"][0]["priority"] == 0
+
+
+def test_done_preserves_priority(server):
+    _seed(active=[Task(text="urgent", priority=2)])
+    data = _api(server, "task/done", {"section": "active", "index": 0})
+    assert data["done"][0]["priority"] == 2
+
+
+def test_reorder_preserves_priority(server):
+    _seed(active=[Task(text="a", priority=1), Task(text="b", priority=2)])
+    data = _api(server, "reorder", {"active": [
+        {"text": "b", "priority": 2}, {"text": "a", "priority": 1}
+    ]})
+    assert data["active"][0]["priority"] == 2
+    assert data["active"][1]["priority"] == 1
+
+
+# =============================================================================
+# Project reorder
+# =============================================================================
+
+def test_reorder_projects(server):
+    _seed(projects=[
+        ProjectInfo(name="A", tasks=[Task(text="t1")]),
+        ProjectInfo(name="B", tasks=[Task(text="t2")]),
+        ProjectInfo(name="C", tasks=[Task(text="t3")]),
+    ])
+    data = _api(server, "project/reorder", {"order": ["C", "A", "B"]})
+    names = [p["name"] for p in data["projects"]]
+    assert names == ["C", "A", "B"]
+
+
+def test_reorder_projects_preserves_tasks(server):
+    _seed(projects=[
+        ProjectInfo(name="X", tasks=[Task(text="xt")]),
+        ProjectInfo(name="Y", tasks=[Task(text="yt1"), Task(text="yt2")]),
+    ])
+    data = _api(server, "project/reorder", {"order": ["Y", "X"]})
+    assert len(data["projects"][0]["tasks"]) == 2
+    assert data["projects"][0]["tasks"][0]["text"] == "yt1"
+    assert len(data["projects"][1]["tasks"]) == 1
+
+
+def test_reorder_projects_partial(server):
+    """Projects not mentioned in order are appended at the end."""
+    _seed(projects=[
+        ProjectInfo(name="A", tasks=[Task(text="t")]),
+        ProjectInfo(name="B", tasks=[Task(text="t")]),
+        ProjectInfo(name="C", tasks=[Task(text="t")]),
+    ])
+    data = _api(server, "project/reorder", {"order": ["C"]})
+    names = [p["name"] for p in data["projects"]]
+    assert names[0] == "C"
+    assert set(names) == {"A", "B", "C"}
+
+
+def test_reorder_projects_undo(server):
+    _seed(projects=[
+        ProjectInfo(name="A", tasks=[Task(text="t")]),
+        ProjectInfo(name="B", tasks=[Task(text="t")]),
+    ])
+    _api(server, "project/reorder", {"order": ["B", "A"]})
+    data = _api(server, "undo", {})
+    names = [p["name"] for p in data["projects"]]
+    assert names == ["A", "B"]

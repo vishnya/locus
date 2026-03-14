@@ -413,3 +413,62 @@ def test_project_task_inherits_project_name():
     content = "## Projects\n### MyProj\nDesc\n- [ ] subtask\n"
     p = parse(content)
     assert p.projects[0].tasks[0].project == "MyProj"
+
+
+# --- Priority parsing and serialization ---
+
+def test_parse_priority_1():
+    content = "## Active\n- [ ] do thing @p(1)\n"
+    p = parse(content)
+    assert p.active[0].priority == 1
+    assert p.active[0].text == "do thing"
+
+
+def test_parse_priority_2():
+    content = "## Active\n- [ ] urgent thing @p(2)\n"
+    p = parse(content)
+    assert p.active[0].priority == 2
+    assert p.active[0].text == "urgent thing"
+
+
+def test_parse_no_priority():
+    content = "## Active\n- [ ] normal thing\n"
+    p = parse(content)
+    assert p.active[0].priority == 0
+
+
+def test_parse_priority_with_deadline():
+    content = "## Active\n- [ ] task @due(2026-05-01) @p(2)\n"
+    p = parse(content)
+    assert p.active[0].priority == 2
+    assert p.active[0].deadline == "2026-05-01"
+    assert p.active[0].text == "task"
+
+
+def test_render_priority():
+    p = Priorities(active=[Task(text="important", priority=1)])
+    text = render(p)
+    assert "@p(1)" in text
+
+
+def test_render_no_priority():
+    p = Priorities(active=[Task(text="normal")])
+    text = render(p)
+    assert "@p(" not in text
+
+
+def test_priority_roundtrip():
+    p = Priorities(
+        active=[Task(text="crit", priority=2), Task(text="norm", priority=0)],
+        up_next=[Task(text="imp", priority=1)],
+    )
+    text = render(p)
+    p2 = parse(text)
+    assert p2.active[0].priority == 2
+    assert p2.active[1].priority == 0
+    assert p2.up_next[0].priority == 1
+
+
+def test_priority_default_is_zero():
+    t = Task(text="test")
+    assert t.priority == 0

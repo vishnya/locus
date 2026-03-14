@@ -3,29 +3,105 @@
 import json
 import os
 import sys
+import uuid
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from http.server import HTTPServer, SimpleHTTPRequestHandler
+from socketserver import ThreadingMixIn
 from pathlib import Path
 from urllib.parse import parse_qs
 
-from locus.priorities import load, save, parse, render, Task, ProjectInfo, Priorities, now_str, vault_path
+from locus.priorities import load, save, parse, render, Task, ProjectInfo, Priorities, now_str, vault_path, user_context_path
+from locus.context import build_context
+from locus.chat import is_available as chat_is_available, stream_response, stream_response_with_tools
+import locus.tools
+from locus.tools import TOOLS, execute_tool
 
 PORT = 5790
 WEB_DIR = Path(__file__).parent
-UNDO_STACK = []  # list of PRIORITIES.md content strings
-MAX_UNDO = 20
+DATA_DIR = Path(__file__).parent.parent / "data"
+MAX_UNDO = 100
+UNDO_FILE = DATA_DIR / "undo_stack.json"
+REDO_FILE = DATA_DIR / "redo_stack.json"
 
 
-def _snapshot_and_save(p):
-    """Snapshot current file to undo stack, then save new state."""
+def _load_stack(path):
+    if path.exists():
+        try:
+            return json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            pass
+    return []
+
+
+def _save_stack(path, stack):
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(stack))
+
+
+UNDO_STACK = _load_stack(UNDO_FILE)
+REDO_STACK = _load_stack(REDO_FILE)
+CHAT_SESSIONS: dict[str, list] = {}  # session_id -> messages
+CHAT_DIR = DATA_DIR / "chat_sessions"
+
+
+def _load_chat_session(session_id: str) -> list:
+    """Load chat session from disk."""
+    path = CHAT_DIR / f"{session_id}.json"
+    if path.exists():
+        try:
+            return json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            pass
+    return []
+
+
+def _save_chat_session(session_id: str, messages: list):
+    """Save chat session to disk."""
+    CHAT_DIR.mkdir(parents=True, exist_ok=True)
+    # Only save user/assistant text messages for display purposes
+    display_msgs = []
+    for msg in messages:
+        if isinstance(msg.get("content"), str):
+            display_msgs.append(msg)
+        elif msg.get("role") == "assistant" and isinstance(msg.get("content"), list):
+            # Extract text from content blocks (SDK objects or dicts)
+            text_parts = []
+            for block in msg["content"]:
+                block_type = getattr(block, "type", None) or (block.get("type") if isinstance(block, dict) else None)
+                block_text = getattr(block, "text", None) or (block.get("text") if isinstance(block, dict) else None)
+                if block_type == "text" and block_text:
+                    text_parts.append(block_text)
+            if text_parts:
+                display_msgs.append({"role": "assistant", "content": "".join(text_parts)})
+    (CHAT_DIR / f"{session_id}.json").write_text(json.dumps(display_msgs))
+
+
+class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
+    daemon_threads = True
+
+
+def _snapshot():
+    """Take a snapshot of current state for undo."""
     path = vault_path()
     if path.exists():
         UNDO_STACK.append(path.read_text())
         if len(UNDO_STACK) > MAX_UNDO:
             UNDO_STACK.pop(0)
+        _save_stack(UNDO_FILE, UNDO_STACK)
+    REDO_STACK.clear()
+    _save_stack(REDO_FILE, REDO_STACK)
+
+
+def _snapshot_and_save(p):
+    """Snapshot current file to undo stack, then save new state."""
+    _snapshot()
     save(p)
+
+
+# Register snapshot callback so tool actions are undoable
+locus.tools._snapshot_before_save = _snapshot
 
 
 class LocusHandler(SimpleHTTPRequestHandler):
@@ -40,6 +116,22 @@ class LocusHandler(SimpleHTTPRequestHandler):
             self._serve_file("static/style.css", "text/css")
         elif self.path == "/api/priorities":
             self._json_response(self._get_priorities())
+        elif self.path == "/api/chat/status":
+            self._json_response({"available": chat_is_available()})
+        elif self.path.startswith("/api/chat/history?"):
+            qs = parse_qs(self.path.split("?", 1)[1])
+            sid = qs.get("session_id", [""])[0]
+            msgs = _load_chat_session(sid) if sid else []
+            self._json_response({"messages": msgs})
+        elif self.path == "/api/user-context":
+            text = ""
+            ucp = user_context_path()
+            if ucp.exists():
+                try:
+                    text = ucp.read_text()
+                except OSError:
+                    pass
+            self._json_response({"text": text})
         else:
             self.send_error(404)
 
@@ -70,16 +162,30 @@ class LocusHandler(SimpleHTTPRequestHandler):
             self._handle_delete_project_task(body)
         elif self.path == "/api/project/task/done":
             self._handle_done_project_task(body)
+        elif self.path == "/api/project/archive":
+            self._handle_archive_project(body)
+        elif self.path == "/api/project/reorder":
+            self._handle_reorder_projects(body)
         elif self.path == "/api/task/add_note":
             self._handle_task_sub(body, "notes", "text")
         elif self.path == "/api/task/delete_note":
             self._handle_task_sub_delete(body, "notes")
         elif self.path == "/api/task/deadline":
             self._handle_task_deadline(body)
+        elif self.path == "/api/task/priority":
+            self._handle_task_priority(body)
+        elif self.path == "/api/task/undone":
+            self._handle_undone(body)
         elif self.path == "/api/undo":
             self._handle_undo(body)
+        elif self.path == "/api/redo":
+            self._handle_redo(body)
         elif self.path == "/api/claude":
             self._handle_claude(body)
+        elif self.path == "/api/chat":
+            self._handle_chat(body)
+        elif self.path == "/api/user-context":
+            self._handle_save_user_context(body)
         else:
             self.send_error(404)
 
@@ -108,13 +214,13 @@ class LocusHandler(SimpleHTTPRequestHandler):
     @staticmethod
     def _task_dict(t):
         return {"text": t.text, "project": t.project, "done": t.done,
-                "notes": t.notes, "deadline": t.deadline}
+                "notes": t.notes, "deadline": t.deadline, "priority": t.priority}
 
     @staticmethod
     def _task_from_dict(t):
         return Task(text=t["text"], project=t.get("project", ""), done=t.get("done", False),
                      notes=t.get("notes", []),
-                     deadline=t.get("deadline", ""))
+                     deadline=t.get("deadline", ""), priority=t.get("priority", 0))
 
     def _get_priorities(self) -> dict:
         p = load()
@@ -122,7 +228,7 @@ class LocusHandler(SimpleHTTPRequestHandler):
         return {
             "active": [td(t) for t in p.active],
             "up_next": [td(t) for t in p.up_next],
-            "projects": [{"name": pr.name, "description": pr.description, "tasks": [td(t) for t in pr.tasks]} for pr in p.projects],
+            "projects": [{"name": pr.name, "description": pr.description, "tasks": [td(t) for t in pr.tasks], "archived": pr.archived} for pr in p.projects],
             "done": [td(t) for t in p.done],
             "notes": p.notes,
         }
@@ -156,7 +262,11 @@ class LocusHandler(SimpleHTTPRequestHandler):
         p = load()
         section = body["section"]
         idx = body["index"]
-        tasks = getattr(p, section, [])
+        if section.startswith("project:"):
+            proj = p.get_project(section[8:])
+            tasks = proj.tasks if proj else []
+        else:
+            tasks = getattr(p, section, [])
         if idx < len(tasks):
             tasks[idx].text = body["text"]
             if "project" in body:
@@ -209,6 +319,28 @@ class LocusHandler(SimpleHTTPRequestHandler):
     def _handle_add_note(self, body):
         p = load()
         p.notes.append(f"[{now_str()}] {body['text']}")
+        _snapshot_and_save(p)
+        self._json_response(self._get_priorities())
+
+    def _handle_reorder_projects(self, body):
+        """Reorder projects. Body: {order: ["name1", "name2", ...]}"""
+        p = load()
+        name_to_proj = {proj.name: proj for proj in p.projects}
+        ordered = []
+        for name in body.get("order", []):
+            if name in name_to_proj:
+                ordered.append(name_to_proj.pop(name))
+        # Append any projects not mentioned (shouldn't happen but safe)
+        ordered.extend(name_to_proj.values())
+        p.projects = ordered
+        _snapshot_and_save(p)
+        self._json_response(self._get_priorities())
+
+    def _handle_archive_project(self, body):
+        p = load()
+        proj = p.get_project(body["name"])
+        if proj:
+            proj.archived = body.get("archived", True)
         _snapshot_and_save(p)
         self._json_response(self._get_priorities())
 
@@ -277,6 +409,33 @@ class LocusHandler(SimpleHTTPRequestHandler):
         _snapshot_and_save(p)
         self._json_response(self._get_priorities())
 
+    def _handle_task_priority(self, body):
+        p, task = self._get_task(body)
+        if task:
+            task.priority = body.get("priority", 0)
+        _snapshot_and_save(p)
+        self._json_response(self._get_priorities())
+
+    def _handle_undone(self, body):
+        """Move a task from done back to its project (or up_next if no project). Unarchive if needed."""
+        p = load()
+        idx = body.get("index", 0)
+        if idx < len(p.done):
+            task = p.done.pop(idx)
+            task.done = False
+            if task.project:
+                proj = p.get_project(task.project)
+                if proj:
+                    proj.tasks.insert(0, task)
+                    if proj.archived:
+                        proj.archived = False
+                else:
+                    p.up_next.insert(0, task)
+            else:
+                p.up_next.insert(0, task)
+        _snapshot_and_save(p)
+        self._json_response(self._get_priorities())
+
     def _handle_delete_note(self, body):
         p = load()
         idx = body["index"]
@@ -289,8 +448,29 @@ class LocusHandler(SimpleHTTPRequestHandler):
         if not UNDO_STACK:
             self._json_response(self._get_priorities())
             return
-        content = UNDO_STACK.pop()
         path = vault_path()
+        if path.exists():
+            REDO_STACK.append(path.read_text())
+            _save_stack(REDO_FILE, REDO_STACK)
+        content = UNDO_STACK.pop()
+        _save_stack(UNDO_FILE, UNDO_STACK)
+        import fcntl
+        with open(path, "w") as f:
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+            f.write(content)
+            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+        self._json_response(self._get_priorities())
+
+    def _handle_redo(self, body):
+        if not REDO_STACK:
+            self._json_response(self._get_priorities())
+            return
+        path = vault_path()
+        if path.exists():
+            UNDO_STACK.append(path.read_text())
+            _save_stack(UNDO_FILE, UNDO_STACK)
+        content = REDO_STACK.pop()
+        _save_stack(REDO_FILE, REDO_STACK)
         import fcntl
         with open(path, "w") as f:
             fcntl.flock(f.fileno(), fcntl.LOCK_EX)
@@ -325,12 +505,68 @@ class LocusHandler(SimpleHTTPRequestHandler):
         subprocess.Popen(["osascript", "-e", script])
         self._json_response({"ok": True})
 
+    def _handle_chat(self, body):
+        """Stream a chat response via SSE."""
+        session_id = body.get("session_id", str(uuid.uuid4()))
+        message = body.get("message", "").strip()
+        if not message:
+            self._json_response({"error": "empty message"}, 400)
+            return
+
+        if session_id not in CHAT_SESSIONS:
+            CHAT_SESSIONS[session_id] = _load_chat_session(session_id)
+
+        history = CHAT_SESSIONS[session_id]
+        history.append({"role": "user", "content": message})
+
+        # Build context
+        p = load()
+        system_prompt = build_context(p, user_context_path())
+
+        # SSE response
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+
+        try:
+            for event_type, event_data in stream_response_with_tools(
+                system_prompt, history, TOOLS, execute_tool
+            ):
+                if event_type == "text":
+                    data = json.dumps({"type": "delta", "text": event_data})
+                elif event_type == "action":
+                    data = json.dumps({"type": "action", "tool": event_data["tool"],
+                                       "input": event_data["input"], "result": event_data["result"]})
+                else:
+                    continue
+                self.wfile.write(f"data: {data}\n\n".encode())
+                self.wfile.flush()
+        except Exception as e:
+            err = json.dumps({"type": "error", "text": str(e)})
+            self.wfile.write(f"data: {err}\n\n".encode())
+            self.wfile.flush()
+
+        # Persist session to disk
+        _save_chat_session(session_id, history)
+
+        done = json.dumps({"type": "done"})
+        self.wfile.write(f"data: {done}\n\n".encode())
+        self.wfile.flush()
+
+    def _handle_save_user_context(self, body):
+        text = body.get("text", "")
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        user_context_path().write_text(text)
+        self._json_response({"ok": True})
+
     def log_message(self, format, *args):
         pass  # quiet
 
 
 def main():
-    server = HTTPServer(("127.0.0.1", PORT), LocusHandler)
+    server = ThreadingHTTPServer(("127.0.0.1", PORT), LocusHandler)
     print(f"Locus UI running at http://localhost:{PORT}")
     try:
         server.serve_forever()

@@ -3,7 +3,7 @@ name = "locus"
 version = "0.1.0"
 description = "Local-first second brain and priority tracker"
 requires-python = ">=3.10"
-dependencies = []
+dependencies = ["anthropic>=0.40"]
 
 [project.scripts]
 lc = "locus.cli:main"
