@@ -1,8 +1,6 @@
-# Locus: Work Setup Plan
+# Locus: Brainstorming
 
-Status: **Design phase** -- implementing when Rachel is back from vacation
-
-Rachel is currently at Meta and on vacation. This plan covers what to build/configure when back at work.
+Non-finalized ideas and directions. Nothing here is committed to -- just thinking out loud.
 
 ---
 
