@@ -2,15 +2,16 @@
 
 ## Session Start -- Always Do This
 
-On session start, immediately check `data/session_status.json`:
-
 1. Run `git pull origin <current-branch>` to get latest
-2. Read `data/session_status.json`
-3. If status is "running" -- tell the user what's in progress (phase, %, detail)
-4. If status is "done" -- briefly mention the completed task
-5. If status is "error" -- alert the user
+2. Read `WORKLOG.md` -- this is your handoff from the last session (may have been on a different device). Mention key items to the user.
+3. Read `data/session_status.json` -- if a long task is running/done/errored, tell the user.
 
-This enables cross-device monitoring (e.g. checking from phone what the computer is doing).
+## Session End -- Always Do This
+
+Before your final commit, append a new entry to `WORKLOG.md`:
+- Date, device (Mac/Server/Phone), 1-3 bullet points of what was done
+- Trim old entries to keep only the last 10
+- Commit and push so the next session (on any device) sees it
 
 ## Cross-Device Session Sync
 
