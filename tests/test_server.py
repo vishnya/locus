@@ -634,3 +634,372 @@ def test_reorder_projects_undo(server):
     data = _api(server, "undo", {})
     names = [p["name"] for p in data["projects"]]
     assert names == ["A", "B"]
+
+
+# =============================================================================
+# POST /api/redo
+# =============================================================================
+
+def test_redo_after_undo(server):
+    _seed()
+    _api(server, "task/delete", {"section": "active", "index": 0})
+    _api(server, "undo", {})
+    data = _api(server, "redo", {})
+    assert len(data["active"]) == 0  # deletion re-applied
+
+
+def test_redo_empty_stack(server):
+    _seed()
+    data = _api(server, "redo", {})
+    assert len(data["active"]) == 1  # unchanged
+
+
+def test_redo_multiple_steps(server):
+    _seed()
+    _api(server, "task/add", {"text": "extra", "section": "active"})
+    _api(server, "task/add", {"text": "more", "section": "active"})
+    _api(server, "undo", {})
+    _api(server, "undo", {})
+    data = _api(server, "redo", {})
+    assert len(data["active"]) == 2  # first redo
+    data = _api(server, "redo", {})
+    assert len(data["active"]) == 3  # second redo
+
+
+def test_redo_cleared_on_new_action(server):
+    _seed()
+    _api(server, "task/delete", {"section": "active", "index": 0})
+    _api(server, "undo", {})  # active has 1 task again
+    # New action should clear redo stack
+    _api(server, "task/add", {"text": "fresh", "section": "active"})
+    data = _api(server, "redo", {})
+    # Redo should be empty, state unchanged
+    assert len(data["active"]) == 2  # original + fresh, no redo effect
+
+
+# =============================================================================
+# POST /api/project/rename
+# =============================================================================
+
+def test_rename_project(server):
+    _seed()
+    data = _api(server, "project/rename", {"old_name": "Test", "new_name": "Renamed"})
+    assert data["projects"][0]["name"] == "Renamed"
+
+
+def test_rename_project_updates_task_refs(server):
+    _seed()
+    data = _api(server, "project/rename", {"old_name": "Test", "new_name": "Renamed"})
+    assert data["active"][0]["project"] == "Renamed"
+    assert data["up_next"][0]["project"] == "Renamed"
+
+
+def test_rename_project_no_op_same_name(server):
+    _seed()
+    data = _api(server, "project/rename", {"old_name": "Test", "new_name": "Test"})
+    assert data["projects"][0]["name"] == "Test"
+
+
+def test_rename_project_no_op_empty_name(server):
+    _seed()
+    data = _api(server, "project/rename", {"old_name": "Test", "new_name": ""})
+    assert data["projects"][0]["name"] == "Test"
+
+
+def test_rename_project_no_op_if_target_exists(server):
+    _seed(projects=[ProjectInfo(name="A"), ProjectInfo(name="B")])
+    data = _api(server, "project/rename", {"old_name": "A", "new_name": "B"})
+    names = [p["name"] for p in data["projects"]]
+    assert "A" in names and "B" in names  # both still exist, no rename
+
+
+def test_rename_project_updates_done_tasks(server):
+    _seed(done=[Task(text="old task", project="Test", done=True)])
+    data = _api(server, "project/rename", {"old_name": "Test", "new_name": "New"})
+    assert data["done"][0]["project"] == "New"
+
+
+def test_rename_project_undo(server):
+    _seed()
+    _api(server, "project/rename", {"old_name": "Test", "new_name": "Renamed"})
+    data = _api(server, "undo", {})
+    assert data["projects"][0]["name"] == "Test"
+    assert data["active"][0]["project"] == "Test"
+
+
+# =============================================================================
+# POST /api/project/delete
+# =============================================================================
+
+def test_delete_project(server):
+    _seed()
+    data = _api(server, "project/delete", {"name": "Test"})
+    assert len(data["projects"]) == 0
+
+
+def test_delete_project_preserves_tasks(server):
+    """Deleting a project doesn't remove tasks from active/up_next."""
+    _seed()
+    data = _api(server, "project/delete", {"name": "Test"})
+    assert len(data["active"]) == 1
+    assert len(data["up_next"]) == 1
+
+
+def test_delete_nonexistent_project(server):
+    _seed()
+    data = _api(server, "project/delete", {"name": "Ghost"})
+    assert len(data["projects"]) == 1  # unchanged
+
+
+def test_delete_project_undo(server):
+    _seed()
+    _api(server, "project/delete", {"name": "Test"})
+    data = _api(server, "undo", {})
+    assert len(data["projects"]) == 1
+    assert data["projects"][0]["name"] == "Test"
+
+
+def test_delete_project_with_tasks(server):
+    _seed(projects=[ProjectInfo(name="P", tasks=[Task(text="pt1"), Task(text="pt2")])])
+    data = _api(server, "project/delete", {"name": "P"})
+    # Project and its tasks are gone
+    assert not any(p["name"] == "P" for p in data["projects"])
+
+
+# =============================================================================
+# POST /api/project/archive
+# =============================================================================
+
+def test_archive_project(server):
+    _seed()
+    data = _api(server, "project/archive", {"name": "Test", "archived": True})
+    assert data["projects"][0]["archived"] is True
+
+
+def test_unarchive_project(server):
+    _seed(projects=[ProjectInfo(name="Test", archived=True)])
+    data = _api(server, "project/archive", {"name": "Test", "archived": False})
+    assert data["projects"][0]["archived"] is False
+
+
+def test_archive_preserves_tasks(server):
+    _seed(projects=[ProjectInfo(name="Test", tasks=[Task(text="pt")])])
+    data = _api(server, "project/archive", {"name": "Test", "archived": True})
+    assert len(data["projects"][0]["tasks"]) == 1
+
+
+def test_archive_undo(server):
+    _seed()
+    _api(server, "project/archive", {"name": "Test", "archived": True})
+    data = _api(server, "undo", {})
+    assert data["projects"][0]["archived"] is False
+
+
+# =============================================================================
+# POST /api/task/undone
+# =============================================================================
+
+def test_undone_moves_to_project(server):
+    _seed(
+        done=[Task(text="was done", project="Test", done=True)],
+        projects=[ProjectInfo(name="Test", tasks=[])],
+    )
+    data = _api(server, "task/undone", {"index": 0})
+    assert len(data["done"]) == 0
+    assert data["projects"][0]["tasks"][0]["text"] == "was done"
+    assert data["projects"][0]["tasks"][0]["done"] is False
+
+
+def test_undone_moves_to_up_next_if_no_project(server):
+    _seed(done=[Task(text="was done", project="", done=True)])
+    data = _api(server, "task/undone", {"index": 0})
+    assert len(data["done"]) == 0
+    assert data["up_next"][0]["text"] == "was done"
+
+
+def test_undone_moves_to_up_next_if_project_missing(server):
+    _seed(done=[Task(text="orphan", project="Deleted", done=True)])
+    data = _api(server, "task/undone", {"index": 0})
+    assert len(data["done"]) == 0
+    assert data["up_next"][0]["text"] == "orphan"
+
+
+def test_undone_unarchives_project(server):
+    _seed(
+        done=[Task(text="was done", project="Test", done=True)],
+        projects=[ProjectInfo(name="Test", archived=True)],
+    )
+    data = _api(server, "task/undone", {"index": 0})
+    assert data["projects"][0]["archived"] is False
+
+
+def test_undone_out_of_range(server):
+    _seed(done=[Task(text="only", done=True)])
+    data = _api(server, "task/undone", {"index": 99})
+    assert len(data["done"]) == 1  # unchanged
+
+
+def test_undone_undo(server):
+    _seed(
+        done=[Task(text="was done", project="Test", done=True)],
+        projects=[ProjectInfo(name="Test")],
+    )
+    _api(server, "task/undone", {"index": 0})
+    data = _api(server, "undo", {})
+    assert len(data["done"]) == 1
+    assert data["done"][0]["text"] == "was done"
+
+
+# =============================================================================
+# POST /api/user-context
+# =============================================================================
+
+def test_save_and_get_user_context(server):
+    from urllib.request import Request, urlopen
+    # Save
+    _api(server, "user-context", {"text": "I am a developer"})
+    # Get
+    url = f"http://127.0.0.1:{server}/api/user-context"
+    with urlopen(url) as resp:
+        data = json.loads(resp.read())
+    assert data["text"] == "I am a developer"
+
+
+def test_save_empty_user_context(server):
+    from urllib.request import Request, urlopen
+    _api(server, "user-context", {"text": "something"})
+    _api(server, "user-context", {"text": ""})
+    url = f"http://127.0.0.1:{server}/api/user-context"
+    with urlopen(url) as resp:
+        data = json.loads(resp.read())
+    assert data["text"] == ""
+
+
+# =============================================================================
+# Authentication
+# =============================================================================
+
+def test_auth_disabled_by_default(server):
+    """Without LOCUS_PASSWORD, all endpoints are accessible."""
+    data = _api(server, "priorities")
+    assert "active" in data
+
+
+def _api_raw(port, method, path, body=None, headers=None):
+    """Low-level HTTP request returning response object for header inspection."""
+    from urllib.request import Request, urlopen
+    from urllib.error import HTTPError
+    url = f"http://127.0.0.1:{port}{path}"
+    data = json.dumps(body).encode() if body is not None else None
+    hdrs = {"Content-Type": "application/json"} if body is not None else {}
+    if headers:
+        hdrs.update(headers)
+    req = Request(url, data=data, headers=hdrs, method=method)
+    try:
+        return urlopen(req)
+    except HTTPError as e:
+        return e
+
+
+@pytest.fixture()
+def auth_server():
+    """Server with password protection enabled."""
+    import web.server as ws
+    old_pw = ws.LOCUS_PASSWORD
+    old_sessions = ws.VALID_SESSIONS.copy()
+    ws.LOCUS_PASSWORD = "testpass123"
+    ws.VALID_SESSIONS.clear()
+
+    srv = HTTPServer(("127.0.0.1", 0), LocusHandler)
+    port = srv.server_address[1]
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    UNDO_STACK.clear()
+    yield port
+    srv.shutdown()
+    ws.LOCUS_PASSWORD = old_pw
+    ws.VALID_SESSIONS.clear()
+    ws.VALID_SESSIONS.update(old_sessions)
+
+
+def test_auth_required_redirects_to_login(auth_server):
+    """Without session cookie, GET / returns login page."""
+    resp = _api_raw(auth_server, "GET", "/")
+    html = resp.read().decode()
+    assert "Log in" in html
+    assert "password" in html
+
+
+def test_auth_wrong_password(auth_server):
+    """Wrong password shows error on login page."""
+    from urllib.parse import urlencode
+    from urllib.request import Request, urlopen
+    data = urlencode({"password": "wrong"}).encode()
+    req = Request(f"http://127.0.0.1:{auth_server}/login", data=data, method="POST")
+    resp = urlopen(req)
+    html = resp.read().decode()
+    assert "Wrong password" in html
+
+
+def test_auth_correct_password_sets_cookie(auth_server):
+    """Correct password sets session cookie and redirects."""
+    from urllib.parse import urlencode
+    from urllib.request import Request, build_opener, HTTPCookieProcessor
+    import http.cookiejar
+    jar = http.cookiejar.CookieJar()
+    opener = build_opener(HTTPCookieProcessor(jar))
+    data = urlencode({"password": "testpass123"}).encode()
+    req = Request(f"http://127.0.0.1:{auth_server}/login", data=data, method="POST")
+    resp = opener.open(req)
+    cookies = {c.name: c for c in jar}
+    assert "locus_session" in cookies
+
+
+def test_auth_session_cookie_grants_access(auth_server):
+    """After login, session cookie grants access to API."""
+    from urllib.parse import urlencode
+    from urllib.request import Request, build_opener, HTTPCookieProcessor
+    import http.cookiejar
+    jar = http.cookiejar.CookieJar()
+    opener = build_opener(HTTPCookieProcessor(jar))
+    # Login
+    data = urlencode({"password": "testpass123"}).encode()
+    req = Request(f"http://127.0.0.1:{auth_server}/login", data=data, method="POST")
+    opener.open(req)
+    # Now access API with cookie
+    _seed()
+    req = Request(f"http://127.0.0.1:{auth_server}/api/priorities")
+    resp = opener.open(req)
+    result = json.loads(resp.read())
+    assert "active" in result
+
+
+def test_auth_exempt_favicon(auth_server):
+    """Favicon is accessible without auth."""
+    # This will either return the file or 404 if it doesn't exist, but not a login page
+    resp = _api_raw(auth_server, "GET", "/static/favicon.svg")
+    # Should not be a login form
+    body = resp.read().decode()
+    assert "Log in" not in body
+
+
+def test_auth_api_post_requires_auth(auth_server):
+    """POST to API without auth serves login page."""
+    _seed()
+    resp = _api_raw(auth_server, "POST", "/api/task/add",
+                    body={"text": "sneak", "project": "X"})
+    html = resp.read().decode()
+    assert "Log in" in html or "password" in html
+
+
+def test_auth_expired_session(auth_server):
+    """Expired session token is rejected."""
+    import web.server as ws
+    expired_token = "expired_token_123"
+    ws.VALID_SESSIONS[expired_token] = 0  # expired in 1970
+    resp = _api_raw(auth_server, "GET", "/api/priorities",
+                    headers={"Cookie": f"locus_session={expired_token}"})
+    html = resp.read().decode()
+    assert "Log in" in html or "password" in html
+    # Token should be purged
+    assert expired_token not in ws.VALID_SESSIONS

@@ -787,6 +787,27 @@ h1 {
   color: #aaa;
 }
 
+.project-delete-btn {
+  opacity: 0;
+  background: none;
+  border: none;
+  color: #555;
+  cursor: pointer;
+  font-size: 14px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+
+.project-header:hover .project-delete-btn {
+  opacity: 0.5;
+}
+
+.project-delete-btn:hover {
+  opacity: 1 !important;
+  color: #e05555;
+}
+
 /* Hidden/archived projects */
 .hidden-projects-toggle {
   font-size: 12px;
@@ -850,7 +871,7 @@ h1 {
 /* Project task list */
 .project-task-list {
   min-height: 24px;
-  background: #0f1a2e;
+  background: #16213e;
   border: 1px dashed #2a3a5c;
 }
 
@@ -1014,6 +1035,26 @@ h1 {
   background: #2a3a5c;
 }
 
+.chat-close-btn {
+  display: none;
+  background: none;
+  border: none;
+  color: #667;
+  cursor: pointer;
+  padding: 2px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  width: 24px;
+  height: 24px;
+  font-size: 18px;
+}
+
+.chat-close-btn:hover {
+  color: #a0b4d0;
+  background: #2a3a5c;
+}
+
 .chat-body {
   display: none;
   flex-direction: column;
@@ -1147,8 +1188,15 @@ h1 {
 }
 .chat-mic.mic-active {
   color: #e05555;
+  background: #3a2020;
   animation: mic-pulse 1.2s infinite;
 }
+
+.chat-input.mic-listening {
+  border-color: #e05555;
+  max-height: 200px;
+}
+
 @keyframes mic-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.5; }
@@ -1298,3 +1346,167 @@ h1 {
 .modal-confirm:hover {
   background: #dd5555;
 }
+
+/* Header row with undo/redo */
+.header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 20px;
+}
+
+.header-row h1 {
+  margin-bottom: 0;
+}
+
+.undo-redo-btns {
+  display: flex;
+  gap: 4px;
+}
+
+.undo-btn {
+  background: none;
+  border: none;
+  color: #556;
+  cursor: pointer;
+  padding: 6px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.undo-btn:hover {
+  background: #2a3a5c;
+  color: #a0b4d0;
+}
+
+/* Touch drag clone */
+.touch-drag-clone {
+  position: fixed;
+  pointer-events: none;
+  opacity: 0.8;
+  z-index: 1000;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  border-radius: 6px;
+  max-width: 80vw;
+}
+
+/* Touch-friendly defaults */
+* { touch-action: manipulation; }
+
+/* Safe area for notched phones */
+body {
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+}
+
+/* Mobile responsive */
+/* FAB hidden on desktop */
+.fab-add { display: none; }
+
+@media (max-width: 600px) {
+  .undo-redo-btns {
+    display: none;
+  }
+
+  .container {
+    padding: 16px 10px;
+  }
+
+  .task {
+    padding: 12px 10px;
+    gap: 8px;
+  }
+
+  .task input[type="checkbox"] {
+    width: 22px;
+    height: 22px;
+  }
+
+  .task-delete {
+    opacity: 0.5;
+    padding: 6px 10px;
+    font-size: 16px;
+  }
+
+  .task-priority {
+    opacity: 1;
+  }
+
+  .pri-mark {
+    font-size: 14px;
+    padding: 0 2px;
+  }
+
+  .project-header {
+    padding: 12px;
+  }
+
+  .project-archive-btn {
+    opacity: 0.4;
+  }
+
+  /* Chat panel full-width on mobile */
+  .chat-panel {
+    width: 100vw;
+    right: -100vw;
+    height: 100dvh;
+    height: -webkit-fill-available;
+  }
+
+  .chat-panel.expanded {
+    right: 0;
+    background: #1a1a2e;
+  }
+
+  .chat-panel:not(.expanded) .chat-header {
+    display: none;
+  }
+
+  .chat-close-btn {
+    display: flex;
+  }
+
+  .chat-input {
+    font-size: 16px; /* prevent iOS zoom on focus */
+  }
+
+  .done-search-input {
+    font-size: 16px;
+  }
+
+  .task-text {
+    font-size: 15px;
+  }
+
+  .task-deadline-empty {
+    opacity: 0.5;
+  }
+
+  /* Floating Action Button -- mobile only */
+  .fab-add {
+    display: flex;
+    position: fixed;
+    bottom: calc(24px + env(safe-area-inset-bottom));
+    right: 20px;
+    width: 56px;
+    height: 56px;
+    border-radius: 50%;
+    background: #2a3a5c;
+    color: #d4a855;
+    font-size: 28px;
+    font-weight: 300;
+    border: none;
+    cursor: pointer;
+    z-index: 40;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  }
+
+  .fab-add:hover, .fab-add:active {
+    background: #3a4a6c;
+  }
+
+}
+

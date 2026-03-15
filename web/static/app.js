@@ -1,5 +1,46 @@
 let state = { active: [], up_next: [], projects: [], done: [], notes: [] };
 
+// Service worker registration
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("/static/sw.js");
+}
+
+// Shake to undo (mobile)
+(function initShakeUndo() {
+  if (!window.DeviceMotionEvent) return;
+  let lastShake = 0;
+  let lastX = null, lastY = null, lastZ = null;
+  const threshold = 25;
+
+  function onMotion(e) {
+    const a = e.accelerationIncludingGravity;
+    if (!a) return;
+    if (lastX !== null) {
+      const delta = Math.abs(a.x - lastX) + Math.abs(a.y - lastY) + Math.abs(a.z - lastZ);
+      if (delta > threshold) {
+        const now = Date.now();
+        if (now - lastShake > 1000) {
+          lastShake = now;
+          api("undo", {});
+        }
+      }
+    }
+    lastX = a.x; lastY = a.y; lastZ = a.z;
+  }
+
+  if (typeof DeviceMotionEvent.requestPermission === "function") {
+    // iOS 13+ requires permission
+    document.addEventListener("touchstart", function permit() {
+      DeviceMotionEvent.requestPermission().then((p) => {
+        if (p === "granted") window.addEventListener("devicemotion", onMotion);
+      }).catch(() => {});
+      document.removeEventListener("touchstart", permit);
+    }, { once: true });
+  } else {
+    window.addEventListener("devicemotion", onMotion);
+  }
+})();
+
 const PROJECT_COLORS = [
   { bg: "#2a2a40", fg: "#b8a9d4" },
   { bg: "#2a3530", fg: "#8bc6a8" },
@@ -20,15 +61,22 @@ function getProjectColor(name) {
 }
 
 async function api(path, body) {
-  const res = await fetch(`/api/${path}`, {
-    method: body ? "POST" : "GET",
-    headers: body ? { "Content-Type": "application/json" } : {},
-    body: body ? JSON.stringify(body) : null,
-  });
-  const data = await res.json();
-  state = data;
-  render();
-  return data;
+  try {
+    const res = await fetch(`/api/${path}`, {
+      method: body ? "POST" : "GET",
+      headers: body ? { "Content-Type": "application/json" } : {},
+      body: body ? JSON.stringify(body) : null,
+    });
+    const data = await res.json();
+    state = data;
+    render();
+    return data;
+  } catch (err) {
+    console.error("API error:", path, err);
+    // Re-render to reset any optimistic UI changes (e.g. checkboxes)
+    render();
+    return state;
+  }
 }
 
 function render() {
@@ -160,6 +208,30 @@ function showDeleteConfirm(taskText, onConfirm) {
   overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.remove(); });
 }
 
+function showDeleteProjectConfirm(projectName, taskCount, onConfirm) {
+  const overlay = document.createElement("div");
+  overlay.className = "modal-overlay";
+  const modal = document.createElement("div");
+  modal.className = "modal";
+  const taskWarning = taskCount > 0
+    ? `This will delete the project and its ${taskCount} backlog task${taskCount === 1 ? "" : "s"}.`
+    : "This will delete the project.";
+  modal.innerHTML = `
+    <div class="modal-title">Delete project?</div>
+    <div class="modal-text">${projectName.replace(/</g, "&lt;")}</div>
+    <div class="modal-hint">${taskWarning} Tasks promoted to Active/Up Next are unaffected. You can undo this action.</div>
+    <div class="modal-actions">
+      <button class="modal-cancel">Cancel</button>
+      <button class="modal-confirm">Delete</button>
+    </div>
+  `;
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+  modal.querySelector(".modal-cancel").addEventListener("click", () => overlay.remove());
+  modal.querySelector(".modal-confirm").addEventListener("click", () => { overlay.remove(); onConfirm(); });
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.remove(); });
+}
+
 function fmt(d) {
   return d.toISOString().split("T")[0];
 }
@@ -228,6 +300,7 @@ function buildTaskEl(task, section, index, opts = {}) {
 
   div.addEventListener("dragstart", onDragStart);
   div.addEventListener("dragend", onDragEnd);
+  attachTouchDrag(div);
 
   // Single click anywhere on row = expand/collapse
   // Double click on text = edit
@@ -293,7 +366,7 @@ function buildTaskEl(task, section, index, opts = {}) {
 
   const del = document.createElement("button");
   del.className = "task-delete";
-  del.textContent = "\ud83d\uddd1";
+  del.textContent = "\u00d7";
   del.addEventListener("click", (e) => {
     e.stopPropagation();
     const doDelete = () => {
@@ -701,7 +774,7 @@ function buildDoneRow(task) {
 
   const del = document.createElement("button");
   del.className = "task-delete";
-  del.textContent = "\u{1F5D1}";
+  del.textContent = "\u00d7";
   del.title = "Delete";
   if (doneIdx >= 0) {
     del.addEventListener("click", (e) => {
@@ -746,11 +819,7 @@ function buildDoneRow(task) {
 }
 
 function isProjectActive(proj) {
-  if (proj.archived) return false;
-  if ((proj.tasks || []).length > 0) return true;
-  // Check if any active/up_next tasks reference this project
-  const hasRef = [...state.active, ...state.up_next].some((t) => t.project === proj.name);
-  return hasRef;
+  return !proj.archived;
 }
 
 function buildProjectCard(proj, collapsed) {
@@ -808,6 +877,7 @@ function buildProjectCard(proj, collapsed) {
     api("project/reorder", { order: allNames });
     projectDragName = null;
   });
+  attachProjectTouchDrag(div);
 
   const header = document.createElement("div");
   header.className = "project-header";
@@ -823,14 +893,83 @@ function buildProjectCard(proj, collapsed) {
   const projColor = getProjectColor(proj.name);
   if (projColor) name.style.color = projColor.fg;
 
+  name.addEventListener("dblclick", (e) => {
+    e.stopPropagation();
+    name.contentEditable = true;
+    name.focus();
+    const range = document.createRange();
+    range.selectNodeContents(name);
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+  });
+  name.addEventListener("blur", () => {
+    name.contentEditable = false;
+    const newName = name.textContent.trim();
+    if (newName && newName !== proj.name) {
+      api("project/rename", { old_name: proj.name, new_name: newName });
+    } else {
+      name.textContent = proj.name;
+    }
+  });
+  name.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); name.blur(); }
+    if (e.key === "Escape") { name.textContent = proj.name; name.blur(); }
+  });
+  name.addEventListener("click", (e) => {
+    e.stopPropagation();
+  });
+  // Double-tap to rename on mobile
+  let nameLastTap = 0;
+  name.addEventListener("touchend", (e) => {
+    const now = Date.now();
+    if (now - nameLastTap < 300) {
+      e.preventDefault();
+      e.stopPropagation();
+      name.contentEditable = true;
+      name.focus();
+      const range = document.createRange();
+      range.selectNodeContents(name);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+      nameLastTap = 0;
+    } else {
+      nameLastTap = now;
+    }
+  });
+
   const backlogCount = (proj.tasks || []).length;
   const badge = document.createElement("span");
   badge.className = "project-badge";
   badge.textContent = backlogCount > 0 ? backlogCount : "";
 
+  const archiveBtn = document.createElement("button");
+  archiveBtn.className = "project-archive-btn";
+  archiveBtn.title = "Archive project";
+  archiveBtn.textContent = "\u2193";
+  archiveBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    api("project/archive", { name: proj.name, archived: true });
+  });
+
+  const deleteBtn = document.createElement("button");
+  deleteBtn.className = "project-delete-btn";
+  deleteBtn.title = "Delete project";
+  deleteBtn.textContent = "\u00d7";
+  deleteBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const taskCount = (proj.tasks || []).length;
+    showDeleteProjectConfirm(proj.name, taskCount, () => {
+      api("project/delete", { name: proj.name });
+    });
+  });
+
   header.appendChild(arrow);
   header.appendChild(name);
   header.appendChild(badge);
+  header.appendChild(archiveBtn);
+  header.appendChild(deleteBtn);
   div.appendChild(header);
 
   const body = document.createElement("div");
@@ -1049,13 +1188,14 @@ document.addEventListener("DOMContentLoaded", () => {
   document.addEventListener("keydown", (e) => {
     if ((e.metaKey || e.ctrlKey) && e.key === "z" && !e.shiftKey && !e.target.closest("input, [contenteditable]")) {
       e.preventDefault();
-      api("undo");
+      api("undo", {});
     }
-    if ((e.metaKey || e.ctrlKey) && e.key === "z" && e.shiftKey && !e.target.closest("input, [contenteditable]")) {
+    if ((e.metaKey || e.ctrlKey) && (e.key === "z" || e.key === "Z") && e.shiftKey && !e.target.closest("input, [contenteditable]")) {
       e.preventDefault();
-      api("redo");
+      api("redo", {});
     }
   });
+
 
   api("priorities");
 });
@@ -1071,12 +1211,21 @@ function initChat() {
   const sendBtn = document.getElementById("chat-send");
   const newBtn = document.getElementById("chat-new-btn");
 
+  const closeBtn = document.getElementById("chat-close-btn");
+
   header.addEventListener("click", (e) => {
-    if (e.target === newBtn) return;
+    if (e.target === newBtn || e.target === closeBtn) return;
     panel.classList.toggle("expanded");
     if (panel.classList.contains("expanded")) {
       chatEnsureReady();
     }
+  });
+
+  closeBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    panel.classList.remove("expanded");
+    const fab = document.getElementById("fab-add");
+    if (fab) fab.style.display = "";
   });
 
   newBtn.addEventListener("click", (e) => {
@@ -1107,7 +1256,7 @@ function initChat() {
   const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (SpeechRecognition) {
     const recognition = new SpeechRecognition();
-    recognition.continuous = true;
+    recognition.continuous = false;
     recognition.interimResults = true;
     recognition.lang = "en-US";
     let finalTranscript = "";
@@ -1126,15 +1275,20 @@ function initChat() {
     recognition.addEventListener("start", () => {
       listening = true;
       micBtn.classList.add("mic-active");
+      input.style.maxHeight = "200px";
+      input.placeholder = "Listening...";
+      input.classList.add("mic-listening");
     });
 
     recognition.addEventListener("end", () => {
       listening = false;
       micBtn.classList.remove("mic-active");
-      // Auto-send if there's content and user stopped recording
+      input.style.maxHeight = "";
+      input.placeholder = "What's on your mind?";
+      input.classList.remove("mic-listening");
       if (input.value.trim()) {
         input.style.height = "auto";
-        input.style.height = Math.min(input.scrollHeight, 80) + "px";
+        input.style.height = Math.min(input.scrollHeight, 200) + "px";
       }
     });
 
@@ -1149,7 +1303,10 @@ function initChat() {
       }
       input.value = finalTranscript + (interim ? " " + interim : "");
       input.style.height = "auto";
-      input.style.height = Math.min(input.scrollHeight, 80) + "px";
+      input.style.height = Math.min(input.scrollHeight, 200) + "px";
+      // Scroll messages up so input stays visible
+      const messages = document.getElementById("chat-messages");
+      messages.scrollTop = messages.scrollHeight;
     });
 
     recognition.addEventListener("error", (e) => {
@@ -1484,3 +1641,294 @@ function onDrop(e) {
   api("reorder", payload);
   dragData = null;
 }
+
+// ---- Touch drag-and-drop support ----
+let touchDrag = null; // { el, section, index, clone, longPressTimer, started, startX, startY, isProject, projectName }
+
+function touchStart(e) {
+  if (e.touches.length !== 1) return;
+  const touch = e.touches[0];
+  const taskEl = e.currentTarget.closest(".task");
+  if (!taskEl) return;
+  // Don't start drag on interactive elements
+  if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA" || e.target.tagName === "BUTTON") return;
+  if (e.target.isContentEditable) return;
+  if (e.target.closest(".task-priority")) return;
+
+  const wrapper = taskEl.closest(".task-wrapper") || taskEl;
+  touchDrag = {
+    el: taskEl,
+    wrapper: wrapper,
+    section: taskEl.dataset.section,
+    index: parseInt(taskEl.dataset.index),
+    clone: null,
+    longPressTimer: null,
+    started: false,
+    startX: touch.clientX,
+    startY: touch.clientY,
+    isProject: false,
+  };
+
+  touchDrag.longPressTimer = setTimeout(() => {
+    if (!touchDrag) return;
+    touchDrag.started = true;
+    wrapper.classList.add("dragging");
+    // Create visual clone
+    const clone = wrapper.cloneNode(true);
+    clone.className = "touch-drag-clone";
+    clone.style.width = wrapper.offsetWidth + "px";
+    const rect = wrapper.getBoundingClientRect();
+    clone.style.left = rect.left + "px";
+    clone.style.top = rect.top + "px";
+    document.body.appendChild(clone);
+    touchDrag.clone = clone;
+    // Prevent scrolling while dragging
+    document.body.style.overflow = "hidden";
+  }, 200);
+}
+
+function touchMove(e) {
+  if (!touchDrag) return;
+  const touch = e.touches[0];
+
+  if (!touchDrag.started) {
+    // If finger moved too far before long press, cancel
+    const dx = touch.clientX - touchDrag.startX;
+    const dy = touch.clientY - touchDrag.startY;
+    if (Math.abs(dx) > 10 || Math.abs(dy) > 10) {
+      clearTimeout(touchDrag.longPressTimer);
+      touchDrag = null;
+    }
+    return;
+  }
+
+  e.preventDefault();
+  // Move clone to follow finger
+  if (touchDrag.clone) {
+    touchDrag.clone.style.left = (touch.clientX - touchDrag.clone.offsetWidth / 2) + "px";
+    touchDrag.clone.style.top = (touch.clientY - 20) + "px";
+  }
+
+  // Highlight drop zone under finger
+  document.querySelectorAll(".task-list.drag-over").forEach((el) => el.classList.remove("drag-over"));
+  if (touchDrag.isProject) {
+    document.querySelectorAll(".project.drag-over-project").forEach((el) => el.classList.remove("drag-over-project"));
+  }
+  const elUnder = document.elementFromPoint(touch.clientX, touch.clientY);
+  if (elUnder) {
+    const dropZone = elUnder.closest(".task-list");
+    if (dropZone) dropZone.classList.add("drag-over");
+    if (touchDrag.isProject) {
+      const projUnder = elUnder.closest(".project");
+      if (projUnder && projUnder.dataset.name !== touchDrag.projectName) {
+        projUnder.classList.add("drag-over-project");
+      }
+    }
+  }
+}
+
+function touchEnd(e) {
+  if (!touchDrag) return;
+  clearTimeout(touchDrag.longPressTimer);
+
+  if (!touchDrag.started) {
+    touchDrag = null;
+    return;
+  }
+
+  const touch = e.changedTouches[0];
+  touchDrag.wrapper.classList.remove("dragging");
+  document.querySelectorAll(".drag-over").forEach((el) => el.classList.remove("drag-over"));
+  document.body.style.overflow = "";
+
+  if (touchDrag.clone) {
+    touchDrag.clone.remove();
+  }
+
+  if (touchDrag.isProject) {
+    touchEndProject(touch);
+    return;
+  }
+
+  // Find drop target
+  const elUnder = document.elementFromPoint(touch.clientX, touch.clientY);
+  if (!elUnder) { touchDrag = null; return; }
+  const dropZone = elUnder.closest(".task-list");
+  if (!dropZone) { touchDrag = null; return; }
+
+  const targetSection = dropZone.dataset.section;
+  const fromSection = touchDrag.section;
+  const fromIdx = touchDrag.index;
+
+  const sourceTasks = getTasksForSection(fromSection);
+  const task = sourceTasks[fromIdx];
+  if (!task) { touchDrag = null; return; }
+
+  sourceTasks.splice(fromIdx, 1);
+
+  if (fromSection.startsWith("project:") && !targetSection.startsWith("project:")) {
+    task.project = fromSection.slice(8);
+  }
+
+  const targetTasks = getTasksForSection(targetSection);
+
+  // Determine insert position
+  const taskEls = Array.from(dropZone.querySelectorAll(":scope > .task-wrapper > .task, :scope > .task"));
+  let insertIdx = taskEls.length;
+  for (let i = 0; i < taskEls.length; i++) {
+    const rect = taskEls[i].getBoundingClientRect();
+    if (touch.clientY < rect.top + rect.height / 2) {
+      insertIdx = i;
+      break;
+    }
+  }
+
+  targetTasks.splice(insertIdx, 0, task);
+
+  const payload = { active: state.active, up_next: state.up_next, projects: {} };
+  const affected = new Set();
+  if (fromSection.startsWith("project:")) affected.add(fromSection.slice(8));
+  if (targetSection.startsWith("project:")) affected.add(targetSection.slice(8));
+  affected.forEach((name) => {
+    const proj = state.projects.find((p) => p.name === name);
+    if (proj) payload.projects[name] = proj.tasks || [];
+  });
+
+  api("reorder", payload);
+  touchDrag = null;
+}
+
+// Project touch drag
+function projectTouchStart(e) {
+  if (e.touches.length !== 1) return;
+  const touch = e.touches[0];
+  const projEl = e.currentTarget.closest(".project");
+  if (!projEl) return;
+  // Only allow drag from header
+  if (e.target.closest(".project-body")) return;
+  if (e.target.tagName === "INPUT" || e.target.tagName === "BUTTON") return;
+  if (e.target.isContentEditable) return;
+
+  touchDrag = {
+    el: projEl,
+    wrapper: projEl,
+    section: null,
+    index: null,
+    clone: null,
+    longPressTimer: null,
+    started: false,
+    startX: touch.clientX,
+    startY: touch.clientY,
+    isProject: true,
+    projectName: projEl.dataset.name,
+  };
+
+  touchDrag.longPressTimer = setTimeout(() => {
+    if (!touchDrag) return;
+    touchDrag.started = true;
+    projEl.classList.add("dragging");
+    const clone = projEl.cloneNode(true);
+    clone.className = "touch-drag-clone";
+    clone.style.width = projEl.offsetWidth + "px";
+    const rect = projEl.getBoundingClientRect();
+    clone.style.left = rect.left + "px";
+    clone.style.top = rect.top + "px";
+    document.body.appendChild(clone);
+    touchDrag.clone = clone;
+    document.body.style.overflow = "hidden";
+  }, 200);
+}
+
+function touchEndProject(touch) {
+  document.querySelectorAll(".project.drag-over-project").forEach((el) => el.classList.remove("drag-over-project"));
+
+  const elUnder = document.elementFromPoint(touch.clientX, touch.clientY);
+  if (!elUnder) { touchDrag = null; return; }
+  const targetProj = elUnder.closest(".project");
+  if (!targetProj || targetProj.dataset.name === touchDrag.projectName) { touchDrag = null; return; }
+
+  const rect = targetProj.getBoundingClientRect();
+  const after = touch.clientY > rect.top + rect.height / 2;
+  const names = state.projects.filter(isProjectActive).map((p) => p.name);
+  const fromIdx = names.indexOf(touchDrag.projectName);
+  if (fromIdx === -1) { touchDrag = null; return; }
+  names.splice(fromIdx, 1);
+  let toIdx = names.indexOf(targetProj.dataset.name);
+  if (after) toIdx++;
+  names.splice(toIdx, 0, touchDrag.projectName);
+  const allNames = names.concat(state.projects.filter((p) => !isProjectActive(p)).map((p) => p.name));
+  api("project/reorder", { order: allNames });
+  touchDrag = null;
+}
+
+function attachTouchDrag(el) {
+  el.addEventListener("touchstart", touchStart, { passive: true });
+  el.addEventListener("touchmove", touchMove, { passive: false });
+  el.addEventListener("touchend", touchEnd, { passive: true });
+}
+
+function attachProjectTouchDrag(el) {
+  el.addEventListener("touchstart", projectTouchStart, { passive: true });
+  el.addEventListener("touchmove", touchMove, { passive: false });
+  el.addEventListener("touchend", touchEnd, { passive: true });
+}
+
+// === Feature: Mobile FAB for adding tasks ===
+// === FAB opens Think/chat panel on mobile ===
+(function initFAB() {
+  const fab = document.getElementById("fab-add");
+  if (!fab) return;
+
+  fab.addEventListener("click", () => {
+    const panel = document.getElementById("chat-panel");
+    panel.classList.add("expanded");
+    chatEnsureReady();
+    fab.style.display = "none";
+    // Focus the chat input
+    setTimeout(() => document.getElementById("chat-input").focus(), 200);
+  });
+})();
+
+// === Feature: Double-tap to edit on mobile ===
+(function initDoubleTapEdit() {
+  const isMobile = () => window.matchMedia("(max-width: 600px)").matches;
+  let lastTapTime = 0;
+  let lastTapTarget = null;
+
+  document.addEventListener("touchend", (e) => {
+    if (!isMobile()) return;
+    const taskEl = e.target.closest(".task");
+    if (!taskEl) return;
+    if (e.target.tagName === "INPUT" || e.target.tagName === "BUTTON" || e.target.tagName === "SELECT") return;
+    if (e.target.isContentEditable) return;
+    if (e.target.closest(".task-priority")) return;
+    if (e.target.closest(".task-delete")) return;
+    if (e.target.closest(".task-deadline")) return;
+
+    const now = Date.now();
+    if (lastTapTarget === taskEl && now - lastTapTime < 300) {
+      e.preventDefault();
+      const wrapper = taskEl.closest(".task-wrapper");
+      if (wrapper) {
+        wrapper.classList.add("expanded");
+        const key = taskEl.dataset.section + ":" + taskEl.dataset.index;
+        expandedTasks.add(key);
+      }
+      const textSpan = taskEl.querySelector(".task-text");
+      if (textSpan) {
+        textSpan.contentEditable = true;
+        textSpan.focus();
+        const range = document.createRange();
+        range.selectNodeContents(textSpan);
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+      }
+      lastTapTime = 0;
+      lastTapTarget = null;
+    } else {
+      lastTapTime = now;
+      lastTapTarget = taskEl;
+    }
+  });
+})();

@@ -3,15 +3,15 @@
 import re
 from pathlib import Path
 
-from locus.priorities import Priorities
+from locus.priorities import Priorities, vault_path
 
 
 def _obsidian_projects_dir() -> Path:
-    return Path.home() / "Obsidian" / "main" / "Projects"
+    return vault_path().parent / "Projects"
 
 
 def _obsidian_vault_dir() -> Path:
-    return Path.home() / "Obsidian" / "main"
+    return vault_path().parent
 
 
 def _first_paragraph(path: Path) -> str:
@@ -160,7 +160,10 @@ def build_context(p: Priorities, user_context_path: Path, budget_chars: int = 16
         "Do this proactively, not just when they say 'add context'. The profile should reflect "
         "their current focus, high-level dreams/goals, active projects, and recent accomplishments. "
         "Use [[wikilinks]] for project references. Merge new info with existing content.\n"
-        "7. PRIORITY SYSTEM: Tasks have three priority levels: none (default), ! (important), "
+        "7. EVERY TASK NEEDS A PROJECT: When adding a task, always assign it to a project. "
+        "If the user doesn't specify which project, ask them before creating the task. "
+        "Never create a task without a project.\n"
+        "8. PRIORITY SYSTEM: Tasks have three priority levels: none (default), ! (important), "
         "!! (critical). When the user asks about their top priorities or what to focus on, "
         "!! tasks are the most urgent, then ! tasks, then unprioritized. When stack-ranking "
         "or discussing priorities, use the set_priority tool to assign levels. "

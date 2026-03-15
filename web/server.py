@@ -1,13 +1,18 @@
 """Locus web UI -- drag-and-drop priority board backed by PRIORITIES.md."""
 
+import hashlib
+import hmac
 import json
 import os
+import secrets
 import sys
+import time
 import uuid
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from http.server import HTTPServer, SimpleHTTPRequestHandler
+from http.server import HTTPServer, SimpleHTTPRequestHandler, HTTPStatus
+from http.cookies import SimpleCookie
 from socketserver import ThreadingMixIn
 from pathlib import Path
 from urllib.parse import parse_qs
@@ -19,11 +24,34 @@ import locus.tools
 from locus.tools import TOOLS, execute_tool
 
 PORT = 5790
+HOST = os.environ.get("LOCUS_HOST", "127.0.0.1")
+LOCUS_PASSWORD = os.environ.get("LOCUS_PASSWORD")
 WEB_DIR = Path(__file__).parent
 DATA_DIR = Path(__file__).parent.parent / "data"
 MAX_UNDO = 100
 UNDO_FILE = DATA_DIR / "undo_stack.json"
 REDO_FILE = DATA_DIR / "redo_stack.json"
+
+# Auth: persistent session tokens (token -> expiry timestamp)
+SESSION_MAX_AGE = 30 * 24 * 3600  # 30 days
+SESSION_FILE = DATA_DIR / "sessions.json"
+
+
+def _load_sessions() -> dict[str, float]:
+    if SESSION_FILE.exists():
+        try:
+            return json.loads(SESSION_FILE.read_text())
+        except (OSError, json.JSONDecodeError):
+            pass
+    return {}
+
+
+def _save_sessions():
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    SESSION_FILE.write_text(json.dumps(VALID_SESSIONS))
+
+
+VALID_SESSIONS: dict[str, float] = _load_sessions()
 
 
 def _load_stack(path):
@@ -104,14 +132,87 @@ def _snapshot_and_save(p):
 locus.tools._snapshot_before_save = _snapshot
 
 
+_LOGIN_TEMPLATE = (
+    '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">'
+    '<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">'
+    '<title>Locus</title><link rel="icon" type="image/svg+xml" href="/static/favicon.svg">'
+    "<style>"
+    "* { margin: 0; padding: 0; box-sizing: border-box; }"
+    "body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;"
+    " background: #1a1a2e; color: #e0e0e0; min-height: 100vh;"
+    " display: flex; align-items: center; justify-content: center; }"
+    "form { background: #16213e; border: 1px solid #2a3a5c; border-radius: 12px;"
+    " padding: 32px; width: 300px; text-align: center; }"
+    "h1 { font-size: 20px; color: #a0b4d0; margin-bottom: 20px; }"
+    "input { width: 100%%; padding: 10px 12px; background: #0f1a2e;"
+    " border: 1px solid #2a3a5c; border-radius: 6px; color: #e0e0e0;"
+    " font-size: 16px; outline: none; margin-bottom: 12px; }"
+    "input:focus { border-color: #4a6fa5; }"
+    "button { width: 100%%; padding: 10px; background: #2a3a5c; color: #a0b4d0;"
+    " border: none; border-radius: 6px; font-size: 14px; cursor: pointer; }"
+    "button:hover { background: #3a4a6c; }"
+    ".error { color: #e05555; font-size: 13px; margin-bottom: 12px; }"
+    "</style></head><body>"
+    '<form method="POST" action="/login"><h1>Locus</h1>'
+    "%s"
+    '<input type="password" name="password" placeholder="Password" autofocus>'
+    '<button type="submit">Log in</button>'
+    "</form></body></html>"
+)
+
+
 class LocusHandler(SimpleHTTPRequestHandler):
+    def _check_auth(self) -> bool:
+        """Return True if authenticated or auth is disabled."""
+        if not LOCUS_PASSWORD:
+            return True
+        cookie = SimpleCookie(self.headers.get("Cookie", ""))
+        token_morsel = cookie.get("locus_session")
+        if not token_morsel:
+            return False
+        token = token_morsel.value
+        expiry = VALID_SESSIONS.get(token)
+        if expiry and time.time() < expiry:
+            return True
+        VALID_SESSIONS.pop(token, None)
+        _save_sessions()
+        return False
+
+    def _serve_login(self, error=""):
+        error_html = f'<div class="error">{error}</div>' if error else ""
+        html = (_LOGIN_TEMPLATE % error_html).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html")
+        self.send_header("Content-Length", str(len(html)))
+        self.end_headers()
+        self.wfile.write(html)
+
+    def _require_auth(self) -> bool:
+        """Check auth; if not authenticated, serve login page and return False."""
+        if self._check_auth():
+            return True
+        self._serve_login()
+        return False
+
     def do_GET(self):
+        # Auth-exempt routes
+        if self.path == "/static/favicon.svg":
+            self._serve_file("static/favicon.svg", "image/svg+xml")
+            return
+        if self.path == "/manifest.json":
+            self._serve_file("static/manifest.json", "application/json")
+            return
+        if self.path == "/static/sw.js":
+            self._serve_file("static/sw.js", "application/javascript")
+            return
+
+        if not self._require_auth():
+            return
+
         if self.path == "/" or self.path == "/index.html":
             self._serve_file("templates/index.html", "text/html")
         elif self.path == "/static/app.js":
             self._serve_file("static/app.js", "application/javascript")
-        elif self.path == "/static/favicon.svg":
-            self._serve_file("static/favicon.svg", "image/svg+xml")
         elif self.path == "/static/style.css":
             self._serve_file("static/style.css", "text/css")
         elif self.path == "/api/priorities":
@@ -136,6 +237,31 @@ class LocusHandler(SimpleHTTPRequestHandler):
             self.send_error(404)
 
     def do_POST(self):
+        # Login route -- exempt from auth
+        if self.path == "/login":
+            length = int(self.headers.get("Content-Length", 0))
+            raw = self.rfile.read(length).decode()
+            params = parse_qs(raw)
+            password = params.get("password", [""])[0]
+            if LOCUS_PASSWORD and hmac.compare_digest(password, LOCUS_PASSWORD):
+                token = secrets.token_urlsafe(32)
+                VALID_SESSIONS[token] = time.time() + SESSION_MAX_AGE
+                _save_sessions()
+                self.send_response(303)
+                secure_flag = "; Secure" if HOST != "127.0.0.1" else ""
+                self.send_header("Set-Cookie",
+                    f"locus_session={token}; HttpOnly; SameSite=Strict; "
+                    f"Max-Age={SESSION_MAX_AGE}; Path=/{secure_flag}")
+                self.send_header("Location", "/")
+                self.end_headers()
+            else:
+                self._serve_login(error="Wrong password.")
+            return
+
+        if not self._check_auth():
+            self._serve_login()
+            return
+
         body = self._read_body()
 
         if self.path == "/api/task/add":
@@ -162,8 +288,12 @@ class LocusHandler(SimpleHTTPRequestHandler):
             self._handle_delete_project_task(body)
         elif self.path == "/api/project/task/done":
             self._handle_done_project_task(body)
+        elif self.path == "/api/project/rename":
+            self._handle_rename_project(body)
         elif self.path == "/api/project/archive":
             self._handle_archive_project(body)
+        elif self.path == "/api/project/delete":
+            self._handle_delete_project(body)
         elif self.path == "/api/project/reorder":
             self._handle_reorder_projects(body)
         elif self.path == "/api/task/add_note":
@@ -316,6 +446,31 @@ class LocusHandler(SimpleHTTPRequestHandler):
         _snapshot_and_save(p)
         self._json_response(self._get_priorities())
 
+    def _handle_rename_project(self, body):
+        old_name = body.get("old_name", "")
+        new_name = body.get("new_name", "").strip()
+        if not old_name or not new_name or old_name == new_name:
+            self._json_response(self._get_priorities())
+            return
+        p = load()
+        # Don't rename if target name already exists (case-insensitive)
+        if p.get_project(new_name) and p.get_project(new_name).name != p.get_project(old_name).name:
+            self._json_response(self._get_priorities())
+            return
+        proj = p.get_project(old_name)
+        if proj:
+            proj.name = new_name
+            # Update project reference on all tasks (active, up_next, done, project tasks)
+            for task_list in [p.active, p.up_next, p.done]:
+                for t in task_list:
+                    if t.project and t.project.lower() == old_name.lower():
+                        t.project = new_name
+            for t in proj.tasks:
+                if t.project and t.project.lower() == old_name.lower():
+                    t.project = new_name
+        _snapshot_and_save(p)
+        self._json_response(self._get_priorities())
+
     def _handle_add_note(self, body):
         p = load()
         p.notes.append(f"[{now_str()}] {body['text']}")
@@ -341,6 +496,14 @@ class LocusHandler(SimpleHTTPRequestHandler):
         proj = p.get_project(body["name"])
         if proj:
             proj.archived = body.get("archived", True)
+        _snapshot_and_save(p)
+        self._json_response(self._get_priorities())
+
+    def _handle_delete_project(self, body):
+        p = load()
+        proj = p.get_project(body["name"])
+        if proj:
+            p.projects.remove(proj)
         _snapshot_and_save(p)
         self._json_response(self._get_priorities())
 
@@ -479,31 +642,7 @@ class LocusHandler(SimpleHTTPRequestHandler):
         self._json_response(self._get_priorities())
 
     def _handle_claude(self, body):
-        import subprocess
-        import shlex
-        p = load()
-        ctx_lines = ["Active:"]
-        for t in p.active:
-            ctx_lines.append(f"  [{t.project}] {t.text}")
-        ctx_lines.append("Up Next:")
-        for t in p.up_next:
-            ctx_lines.append(f"  [{t.project}] {t.text}")
-        ctx_lines.append("Projects:")
-        for proj in p.projects:
-            ctx_lines.append(f"  {proj.name}: {proj.description}")
-            for t in proj.tasks:
-                ctx_lines.append(f"    - {t.text}")
-        ctx = "\n".join(ctx_lines)
-        prompt = f"Here are my current priorities:\n\n{ctx}\n\nHelp me think about what to work on next and how to approach it."
-        escaped = shlex.quote(prompt)
-        script = f'''
-            tell application "Terminal"
-                activate
-                do script "cd ~/code/locus && claude --dangerously-skip-permissions -p {escaped}"
-            end tell
-        '''
-        subprocess.Popen(["osascript", "-e", script])
-        self._json_response({"ok": True})
+        self._json_response({"error": "Terminal launch not available on remote server. Use the chat panel instead."}, 400)
 
     def _handle_chat(self, body):
         """Stream a chat response via SSE."""
@@ -566,8 +705,9 @@ class LocusHandler(SimpleHTTPRequestHandler):
 
 
 def main():
-    server = ThreadingHTTPServer(("127.0.0.1", PORT), LocusHandler)
-    print(f"Locus UI running at http://localhost:{PORT}")
+    server = ThreadingHTTPServer((HOST, PORT), LocusHandler)
+    auth_note = " (password protected)" if LOCUS_PASSWORD else ""
+    print(f"Locus UI running at http://{HOST}:{PORT}{auth_note}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

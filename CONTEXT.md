@@ -17,7 +17,7 @@ in the Obsidian vault. Zero external dependencies beyond Python stdlib.
 | `web/static/app.js` | Vanilla JS: drag-and-drop, collapsible tasks/projects, natural date parsing |
 | `web/static/style.css` | Dark theme |
 | `web/static/favicon.svg` | Locus favicon (orbital rings) |
-| `hammerspoon/locus_hotkey.lua` | Ctrl+Shift+L chord hotkey |
+| `hammerspoon/locus_hotkey.lua` | Cmd+Shift+L opens web UI |
 | `claude/morning.md` | `/morning` Claude command |
 | `claude/think.md` | `/think` Claude command |
 | `launchd/com.locus.plist` | Template; install.sh generates the live plist |
@@ -25,17 +25,14 @@ in the Obsidian vault. Zero external dependencies beyond Python stdlib.
 ## Architecture
 
 ```
-Ctrl+Shift+L (Hammerspoon chord, 3s timeout)
-  -> L: quick note capture (dialog -> lc note)
-  -> T: open Claude Code in Terminal (cd ~/code/locus && claude '/think')
-  -> U: open web UI (http://locus:5790)
+Cmd+Shift+L (Hammerspoon) -> opens https://5.161.182.15.nip.io
 
-web/server.py (launchd, always running)
+Hetzner VPS (5.161.182.15):
+  Caddy (HTTPS via nip.io) -> web/server.py (systemd, port 5790)
   -> serves web UI at /
   -> GET /api/priorities returns full state
   -> POST endpoints for task/project CRUD
-  -> reads/writes ~/Obsidian/main/PRIORITIES.md
-  -> syncs projects to ~/Obsidian/main/Projects/*.md
+  -> reads/writes /home/locus/vault/PRIORITIES.md
 
 PRIORITIES.md (single source of truth)
   -> ## Active: 2-3 tasks being worked on

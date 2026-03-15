@@ -1,25 +1,11 @@
 """Chat backend using the Anthropic SDK for streaming responses."""
 
 import os
-import re
-from pathlib import Path
 
 
 def _get_api_key() -> str | None:
-    """Get ANTHROPIC_API_KEY from env, falling back to parsing ~/.zshrc."""
-    key = os.environ.get("ANTHROPIC_API_KEY")
-    if key:
-        return key
-    zshrc = Path.home() / ".zshrc"
-    if zshrc.exists():
-        try:
-            for line in zshrc.read_text().splitlines():
-                m = re.match(r'^export\s+ANTHROPIC_API_KEY[= ]"?([^"#\s]+)"?', line)
-                if m:
-                    return m.group(1)
-        except (OSError, UnicodeDecodeError):
-            pass
-    return None
+    """Get ANTHROPIC_API_KEY from environment."""
+    return os.environ.get("ANTHROPIC_API_KEY")
 
 
 def is_available() -> bool:

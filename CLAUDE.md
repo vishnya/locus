@@ -75,8 +75,9 @@ Locus is a local-first second brain and priority tracker. All data lives in a si
 ### Architecture
 
 - Zero dependencies beyond Python stdlib
-- Single source of truth: `~/Obsidian/main/PRIORITIES.md`
-- Hammerspoon hotkey: Ctrl+Shift+N for quick capture
+- Source of truth: Hetzner VPS (5.161.182.15), vault at `/home/locus/vault/PRIORITIES.md`
+- Web UI: https://5.161.182.15.nip.io (Caddy + systemd)
+- Hammerspoon hotkey: Cmd+Shift+L opens web UI
 - Claude commands: `/morning`, `/think`
 - File locking via `fcntl.flock()` for concurrent writes
 - Vault path overridable via `LOCUS_VAULT` env var
@@ -93,7 +94,7 @@ locus/
 data/
     session_status.json   Git-tracked session status (NOT gitignored)
 hammerspoon/
-    locus_hotkey.lua      Ctrl+Shift+N quick capture
+    locus_hotkey.lua      Cmd+Shift+L opens web UI
 claude/
     morning.md            /morning Claude command
     think.md              /think Claude command

@@ -6,3 +6,4 @@ __pycache__/
 dist/
 build/
 data/chat_sessions/
+data/sessions.json

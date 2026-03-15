@@ -47,7 +47,7 @@ if [ -f "$INIT_LUA" ]; then
         echo "" >> "$INIT_LUA"
         echo "$DOFILE_COMMENT" >> "$INIT_LUA"
         echo "$DOFILE_LINE" >> "$INIT_LUA"
-        echo "Added Hammerspoon hotkey (Ctrl+Shift+L chord)"
+        echo "Added Hammerspoon hotkey (Cmd+Shift+L opens web UI)"
     else
         echo "Skipped: Hammerspoon hotkey already configured"
     fi
@@ -106,13 +106,7 @@ fi
 
 echo ""
 echo "Locus installed!"
-echo "  Web UI: http://localhost:5790 (auto-starts on login)"
+echo "  Web UI: https://5.161.182.15.nip.io"
 echo "  CLI:    lc status"
-echo "  Hotkey: Ctrl+Shift+L -> [L]note [T]hink [U]I"
+echo "  Hotkey: Cmd+Shift+L opens web UI"
 echo "  Logs:   tail -f /tmp/locus.log"
-echo ""
-echo "Quick access tip:"
-echo "  Chrome: go to chrome://settings/searchEngines"
-echo "  -> Site search -> Add"
-echo "  -> Name: Locus, Shortcut: locus, URL: http://localhost:5790"
-echo "  Now type 'locus' + Enter in the address bar to open Locus."
