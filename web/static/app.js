@@ -1253,6 +1253,13 @@ function initChat() {
 
   // Voice input via Web Speech API
   const micBtn = document.getElementById("chat-mic");
+  const voiceFab = document.getElementById("voice-fab");
+  const voiceOverlay = document.getElementById("voice-overlay");
+  const voiceTranscript = document.getElementById("voice-transcript");
+  const voiceCancel = document.getElementById("voice-cancel");
+  const SILENCE_TIMEOUT = 2500;
+  const SEND_KEYWORD = /\bsend it\b/i;
+
   const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (SpeechRecognition) {
     const recognition = new SpeechRecognition();
@@ -1261,34 +1268,113 @@ function initChat() {
     recognition.lang = "en-US";
     let finalTranscript = "";
     let listening = false;
+    let silenceTimer = null;
+    let voiceMode = false; // true = FAB/overlay mode (auto-send), false = inline mic
 
+    function resetSilenceTimer() {
+      clearTimeout(silenceTimer);
+      silenceTimer = setTimeout(() => {
+        if (listening && voiceMode) {
+          recognition.stop();
+        }
+      }, SILENCE_TIMEOUT);
+    }
+
+    function startVoice(overlay) {
+      voiceMode = overlay;
+      finalTranscript = overlay ? "" : input.value;
+      if (overlay) {
+        voiceOverlay.classList.add("active");
+        voiceTranscript.textContent = "Listening...";
+        // Ensure chat panel is open and session ready
+        if (!panel.classList.contains("expanded")) {
+          panel.classList.add("expanded");
+        }
+        chatEnsureReady();
+      }
+      try {
+        recognition.start();
+      } catch (e) {
+        // Already started
+      }
+    }
+
+    function stopVoice(send) {
+      clearTimeout(silenceTimer);
+      listening = false;
+      micBtn.classList.remove("mic-active");
+      voiceOverlay.classList.remove("active");
+      try { recognition.stop(); } catch (e) {}
+
+      if (send && voiceMode) {
+        const text = finalTranscript.replace(SEND_KEYWORD, "").trim();
+        if (text) {
+          input.value = text;
+          chatSend();
+        }
+      }
+      voiceMode = false;
+    }
+
+    // FAB button - overlay voice mode with auto-send
+    voiceFab.addEventListener("click", () => {
+      if (listening) {
+        stopVoice(true);
+      } else {
+        startVoice(true);
+      }
+    });
+
+    // Inline mic button in chat input row
     micBtn.addEventListener("click", (e) => {
       e.stopPropagation();
       if (listening) {
-        recognition.stop();
+        stopVoice(true);
       } else {
-        finalTranscript = input.value;
-        recognition.start();
+        startVoice(true);
       }
+    });
+
+    // Cancel button in overlay
+    voiceCancel.addEventListener("click", () => {
+      stopVoice(false);
     });
 
     recognition.addEventListener("start", () => {
       listening = true;
       micBtn.classList.add("mic-active");
-      input.style.maxHeight = "200px";
-      input.placeholder = "Listening...";
-      input.classList.add("mic-listening");
+      if (voiceMode) {
+        resetSilenceTimer();
+      } else {
+        input.style.maxHeight = "200px";
+        input.placeholder = "Listening...";
+        input.classList.add("mic-listening");
+      }
     });
 
     recognition.addEventListener("end", () => {
-      listening = false;
-      micBtn.classList.remove("mic-active");
-      input.style.maxHeight = "";
-      input.placeholder = "What's on your mind?";
-      input.classList.remove("mic-listening");
-      if (input.value.trim()) {
-        input.style.height = "auto";
-        input.style.height = Math.min(input.scrollHeight, 200) + "px";
+      if (listening && voiceMode) {
+        // Auto-send on end (silence triggered stop or browser stopped)
+        const text = finalTranscript.replace(SEND_KEYWORD, "").trim();
+        listening = false;
+        micBtn.classList.remove("mic-active");
+        voiceOverlay.classList.remove("active");
+        if (text) {
+          input.value = text;
+          chatSend();
+        }
+        voiceMode = false;
+      } else {
+        listening = false;
+        micBtn.classList.remove("mic-active");
+        voiceOverlay.classList.remove("active");
+        input.style.maxHeight = "";
+        input.placeholder = "What's on your mind?";
+        input.classList.remove("mic-listening");
+        if (input.value.trim()) {
+          input.style.height = "auto";
+          input.style.height = Math.min(input.scrollHeight, 200) + "px";
+        }
       }
     });
 
@@ -1301,21 +1387,37 @@ function initChat() {
           interim += e.results[i][0].transcript;
         }
       }
-      input.value = finalTranscript + (interim ? " " + interim : "");
-      input.style.height = "auto";
-      input.style.height = Math.min(input.scrollHeight, 200) + "px";
-      // Scroll messages up so input stays visible
-      const messages = document.getElementById("chat-messages");
-      messages.scrollTop = messages.scrollHeight;
+      const display = finalTranscript + (interim ? " " + interim : "");
+
+      if (voiceMode) {
+        voiceTranscript.textContent = display || "Listening...";
+        resetSilenceTimer();
+        // Check for keyword trigger
+        if (SEND_KEYWORD.test(display)) {
+          stopVoice(true);
+          return;
+        }
+      } else {
+        input.value = display;
+        input.style.height = "auto";
+        input.style.height = Math.min(input.scrollHeight, 200) + "px";
+        // Scroll messages up so input stays visible
+        const messages = document.getElementById("chat-messages");
+        messages.scrollTop = messages.scrollHeight;
+      }
     });
 
     recognition.addEventListener("error", (e) => {
       listening = false;
       micBtn.classList.remove("mic-active");
+      voiceOverlay.classList.remove("active");
+      voiceMode = false;
+      clearTimeout(silenceTimer);
       if (e.error !== "aborted") console.warn("Speech recognition error:", e.error);
     });
   } else {
     micBtn.style.display = "none";
+    voiceFab.style.display = "none";
   }
 
   // Check availability

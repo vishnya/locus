@@ -65,6 +65,22 @@
     </div>
   </div>
 
+  <button class="voice-fab" id="voice-fab" title="Voice input">
+    <svg width="24" height="24" viewBox="0 0 16 16" fill="currentColor">
+      <path d="M8 10a2 2 0 002-2V4a2 2 0 10-4 0v4a2 2 0 002 2z"/>
+      <path d="M12 8a1 1 0 10-2 0 2 2 0 01-4 0 1 1 0 10-2 0 4 4 0 003 3.87V13H6a1 1 0 100 2h4a1 1 0 100-2H9v-1.13A4 4 0 0012 8z"/>
+    </svg>
+  </button>
+
+  <div class="voice-overlay" id="voice-overlay">
+    <div class="voice-overlay-content">
+      <div class="voice-ripple" id="voice-ripple"></div>
+      <div class="voice-transcript" id="voice-transcript">Listening...</div>
+      <div class="voice-hint">Silence for 2.5s or say "send it" to send</div>
+      <button class="voice-cancel" id="voice-cancel">Cancel</button>
+    </div>
+  </div>
+
   <div class="chat-panel" id="chat-panel">
     <div class="chat-header" id="chat-header">
       <svg class="chat-header-icon" width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
