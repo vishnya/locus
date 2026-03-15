@@ -250,7 +250,7 @@ class LocusHandler(SimpleHTTPRequestHandler):
                 self.send_response(303)
                 secure_flag = "; Secure" if HOST != "127.0.0.1" else ""
                 self.send_header("Set-Cookie",
-                    f"locus_session={token}; HttpOnly; SameSite=Strict; "
+                    f"locus_session={token}; HttpOnly; SameSite=Lax; "
                     f"Max-Age={SESSION_MAX_AGE}; Path=/{secure_flag}")
                 self.send_header("Location", "/")
                 self.end_headers()
